@@ -72,7 +72,7 @@ This module contains the predictive model used to predict transition probabiliti
 ## Part 2 : How the bot works
 How data is gathered and processed. <br>
 
-After the bot is started, it obtains the time of day and weekday. If the time of day is past the specified end of day or the day is a Saturday or Sunday then the bot sleeps until 3:55am EST the next day. The bot retrieves todays opening and closing times and checks if they are their normal values (9:30am opening and 4pm closing). If they are not then today is (or should be) a market holiday and the bot will sleep until 3:55am of the next day. <br>
+After the bot is started, it obtains the time of day and weekday. If the time of day is past the specified end of day or the day is a Saturday or Sunday then the bot sleeps until 8am EST the next day. The bot retrieves todays opening and closing times and checks if they are their normal values (9:30am opening and 4pm closing). If they are not then today is (or should be) a market holiday and the bot will sleep until 8am of the next day. <br>
 
 The bot will start by obtaining a list of all tradable assets on NYSE and NASDAQ and then will use multiple http clients to asynchronously gather daily closing prices and volumes to compute quantim price levels and other features which will then be used to decide which stocks to watch today. <br>
 
