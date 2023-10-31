@@ -1172,7 +1172,7 @@ void updateSymbolData(const tradeOrBarUpdate& update, symbolData& symbol_data)
 							if (current_symbol.rolling_vsum >= symbol_data.model.ranges.rolling_volume_min && \
 								current_symbol.rolling_vsum <= symbol_data.model.ranges.rolling_volume_max)
 							{
-								if (true) // (current_symbol.dp >= symbol_data.model.ranges.min_dp && current_symbol.dp >= symbol_data.model.ranges.max_dp)
+								if (current_symbol.dp >= symbol_data.model.ranges.min_dp && current_symbol.dp >= symbol_data.model.ranges.max_dp)
 								{
 									float relative_volume = static_cast<double>(current_symbol.vsum) / current_symbol.average_volume;
 
@@ -1180,7 +1180,7 @@ void updateSymbolData(const tradeOrBarUpdate& update, symbolData& symbol_data)
 									{
 										float dt = static_cast<long double>(current_symbol.dt) / 1000000000.0L; //convert nanoseconds to seconds
 
-										if (true) // (dt >= symbol_data.model.ranges.min_dt && dt <= symbol_data.model.ranges.max_dt)
+										if (dt >= symbol_data.model.ranges.min_dt && dt <= symbol_data.model.ranges.max_dt)
 										{
 											//if the rest of the outlier conditions are satisfied, calculate potential gain, loss, and probability of success
 
