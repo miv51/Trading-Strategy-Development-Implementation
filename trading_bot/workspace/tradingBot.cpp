@@ -913,12 +913,10 @@ void tradingBot::start()
 			dictionary last_trade_update;
 
 			//while waiting to start trading handle account and minute bar updates
-
-			while (true)
+			
+			//if current time >= trading start time then start trading (go to next loop)
+			while (time(nullptr) <= trading_start_time)
 			{
-				//if current time >= trading start time then start trading (go to next loop)
-				if (time(nullptr) > trading_start_time) break;
-
 				account_ws.recv(last_msg);
 
 				if (last_msg.size() > 2) //expecting individual json objects
@@ -947,11 +945,9 @@ void tradingBot::start()
 
 			try
 			{
-				while (true)
+				//if current time >= trading end time then stop trading
+				while (time(nullptr) <= trading_end_time)
 				{
-					//if current time >= trading end time then stop trading
-					if (time(nullptr) > trading_end_time) break;
-
 					account_ws.recv(last_msg);
 
 					if (last_msg.size() > 2) //expecting individual json objects
@@ -1172,7 +1168,7 @@ void updateSymbolData(const tradeOrBarUpdate& update, symbolData& symbol_data)
 							if (current_symbol.rolling_vsum >= symbol_data.model.ranges.rolling_volume_min && \
 								current_symbol.rolling_vsum <= symbol_data.model.ranges.rolling_volume_max)
 							{
-								if (current_symbol.dp >= symbol_data.model.ranges.min_dp && current_symbol.dp >= symbol_data.model.ranges.max_dp)
+								if (current_symbol.dp >= symbol_data.model.ranges.min_dp && current_symbol.dp <= symbol_data.model.ranges.max_dp)
 								{
 									float relative_volume = static_cast<double>(current_symbol.vsum) / current_symbol.average_volume;
 
@@ -1194,8 +1190,8 @@ void updateSymbolData(const tradeOrBarUpdate& update, symbolData& symbol_data)
 												current_symbol.dp, current_symbol.std, dt, current_symbol.vsum, current_symbol.average_volume, current_symbol.previous_days_close,
 												current_symbol.sizes.size(), current_symbol.rolling_vsum, current_symbol.pm, update.s, current_symbol.pp, current_symbol.l);
 
-											//probability_of_success = godSays();
-
+											//probability_of_success = godSays(); //see how well the bot handles order when making random buy and sell decisions
+											
 											//based on those variables, decide whether or not to hold, enter, or adjust a position
 											if (probability_of_success * (potential_gain_per_share + potential_loss_per_share) > potential_loss_per_share)
 											{
@@ -1220,7 +1216,7 @@ void updateSymbolData(const tradeOrBarUpdate& update, symbolData& symbol_data)
 		*/
 
 		//only place orders if trading is permitted
-		if (current_symbol.trading_permitted) current_symbol.updatePosition(symbol_data, current_symbol.n != current_symbol.new_n);
+		if (current_symbol.trading_permitted) current_symbol.updatePosition(symbol_data);
 		else current_symbol.quantity_desired = 0;
 
 		current_symbol.n = current_symbol.new_n;
@@ -1244,7 +1240,7 @@ void updateSymbolData(const tradeOrBarUpdate& update, symbolData& symbol_data)
 		if (current_symbol.entry_price <= 1.0) current_symbol.entry_price = roundPrice(current_symbol.entry_price - 0.0001);
 		else current_symbol.entry_price = roundPrice(current_symbol.entry_price - 0.01);
 
-		if (current_symbol.entry_price < current_symbol.limit_price) current_symbol.updatePosition(symbol_data, false);
+		if (current_symbol.entry_price < current_symbol.limit_price) current_symbol.updatePosition(symbol_data);
 	}
 }
 
@@ -1392,7 +1388,7 @@ void handleTradeUpdate(std::string& last_msg, dictionary& trade_update_info, sym
 	current_symbol.waiting_for_update = false;
 
 	//if the bot cancels an order because its directional bias changed, it might also need to place a new order
-	if (current_symbol.trading_permitted && event == "canceled") current_symbol.updatePosition(final_symbols, false);
+	if (current_symbol.trading_permitted && event == "canceled") current_symbol.updatePosition(final_symbols);
 }
 
 double symbol::getPriceLevel(const int n_diff) //n_diff is difference from new_n
@@ -1410,15 +1406,15 @@ double symbol::getPriceLevel(const int n_diff) //n_diff is difference from new_n
 	return previous_days_close / E;
 }
 
-void symbol::updatePosition(symbolData& symbol_data, const bool different_n)
+void symbol::updatePosition(symbolData& symbol_data)
 {
 	if (waiting_for_update) return; //don't place another order until the previous one has been received by the trade update stream
 	if (quantity_desired > quantity_owned + quantity_pending) //add more shares
 	{
 		if (quantity_pending > 0)
 		{
-			int quantity_attainable = static_cast<int>((symbol_data.buying_power + limit_price * (order_quantity - order_quantity_filled)) / entry_price);
-			int quantity_remaining = quantity_desired - quantity_owned - quantity_pending + order_quantity - order_quantity_filled;
+			int quantity_attainable = static_cast<int>((symbol_data.buying_power + limit_price * order_quantity) / entry_price);
+			int quantity_remaining = quantity_desired - quantity_owned - quantity_pending + order_quantity;
 
 			if (quantity_attainable <= 0) return;
 			if (quantity_attainable < quantity_remaining) quantity_remaining = quantity_attainable;
@@ -1453,9 +1449,10 @@ void symbol::updatePosition(symbolData& symbol_data, const bool different_n)
 			//if no 404
 			if (symbol_data.response.status_code != 404)
 			{
-				symbol_data.buying_power -= entry_price * quantity_remaining;
+				symbol_data.buying_power -= entry_price * (quantity_remaining - order_quantity_filled);
 
-				quantity_pending += quantity_remaining;
+				order_quantity = quantity_remaining;
+				quantity_pending += quantity_remaining - order_quantity_filled;
 				replacement_order_id = symbol_data.order_data["id"];
 				limit_price = entry_price;
 				canceled_order = false;
@@ -1524,7 +1521,7 @@ void symbol::updatePosition(symbolData& symbol_data, const bool different_n)
 		}
 		else if (quantity_pending < 0)
 		{
-			int quantity_remaining = quantity_owned + quantity_pending - quantity_desired + order_quantity - order_quantity_filled;
+			int quantity_remaining = quantity_owned + quantity_pending - quantity_desired + order_quantity;
 
 			if (quantity_remaining == order_quantity && limit_price == entry_price) return;
 
@@ -1555,7 +1552,8 @@ void symbol::updatePosition(symbolData& symbol_data, const bool different_n)
 			//if no 404 error
 			if (symbol_data.response.status_code != 404)
 			{
-				quantity_pending -= quantity_remaining;
+				order_quantity = quantity_remaining;
+				quantity_pending -= quantity_remaining - order_quantity_filled;
 				replacement_order_id = symbol_data.order_data["id"];
 				limit_price = entry_price;
 				canceled_order = false;
@@ -1581,14 +1579,14 @@ void symbol::updatePosition(symbolData& symbol_data, const bool different_n)
 			waiting_for_update = true;
 		}
 	}
-	else if (quantity_pending != 0 && different_n) //adjust the price of the current order
+	else if (quantity_pending != 0) //adjust the price of the current order
 	{
-		int quantity_remaining = order_quantity - order_quantity_filled; //quantity_owned + quantity_pending - quantity_desired is always zero in this case
+		int quantity_remaining = order_quantity; //quantity_owned + quantity_pending - quantity_desired is always zero in this case
 
 		if (quantity_pending > 0)
 		{
 			//number of shares we can own with the available buying power
-			int quantity_attainable = static_cast<int>((symbol_data.buying_power + limit_price * quantity_remaining) / entry_price);
+			int quantity_attainable = static_cast<int>((symbol_data.buying_power + limit_price * order_quantity) / entry_price);
 
 			if (quantity_attainable <= 0) return;
 			if (quantity_attainable < quantity_remaining) quantity_remaining = quantity_attainable;
@@ -1630,17 +1628,18 @@ void symbol::updatePosition(symbolData& symbol_data, const bool different_n)
 		{
 			if (quantity_pending > 0)
 			{
-				symbol_data.buying_power -= entry_price * quantity_remaining;
+				symbol_data.buying_power -= entry_price * (quantity_remaining - order_quantity_filled);
 
-				quantity_pending += quantity_remaining;
+				quantity_pending += quantity_remaining - order_quantity_filled;
 			}
-			else quantity_pending -= quantity_remaining; //quantity_pending is less than 0
-		}
+			else quantity_pending -= quantity_remaining - order_quantity_filled; //quantity_pending is less than 0
 
-		replacement_order_id = symbol_data.order_data["id"];
-		limit_price = entry_price;
-		canceled_order = false;
-		waiting_for_update = true;
+			order_quantity = quantity_remaining;
+			replacement_order_id = symbol_data.order_data["id"];
+			limit_price = entry_price;
+			canceled_order = false;
+			waiting_for_update = true;
+		}
 	}
 }
 

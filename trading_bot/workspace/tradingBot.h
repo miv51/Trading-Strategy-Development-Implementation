@@ -138,7 +138,7 @@ struct symbol
 	double entry_price = 0.0; //price to set the buy or sell order at
 	double limit_price = 0.0; //price of the last or current limit order
 
-	void updatePosition(symbolData&, const bool); //manage this stock's position size - call every trade AND account update
+	void updatePosition(symbolData&); //manage this stock's position size - call every trade AND account update
 };
 
 //contains information about a trade or minute bar update
