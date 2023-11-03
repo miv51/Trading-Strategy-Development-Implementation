@@ -1190,7 +1190,7 @@ void updateSymbolData(const tradeOrBarUpdate& update, symbolData& symbol_data)
 												current_symbol.dp, current_symbol.std, dt, current_symbol.vsum, current_symbol.average_volume, current_symbol.previous_days_close,
 												current_symbol.sizes.size(), current_symbol.rolling_vsum, current_symbol.pm, update.s, current_symbol.pp, current_symbol.l);
 
-											//probability_of_success = godSays(); //see how well the bot handles order when making random buy and sell decisions
+											//probability_of_success = godSays(); //see how well the bot handles orders when making random buy and sell decisions
 											
 											//based on those variables, decide whether or not to hold, enter, or adjust a position
 											if (probability_of_success * (potential_gain_per_share + potential_loss_per_share) > potential_loss_per_share)
