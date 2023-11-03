@@ -221,8 +221,8 @@ struct inlierRanges //contains the min & maximum allowed values for each input p
     double min_dp = -999999999.0; //minimum allowed price change within the last rolling period
     double max_dp = +999999999.0; //maximum allowed price change within the last rolling period
 
-    long long min_dt = 0LL; //minimum allowed difference in time between the first and last trade that occured within the last rolling period
-    long long max_dt = 2000000000LL; //maximum allowed difference in time between the first and last trade that occured within the last rolling period
+    double min_dt = 0.0; //minimum allowed difference in time between the first and last trade that occured within the last rolling period
+    double max_dt = 2.0; //maximum allowed difference in time between the first and last trade that occured within the last rolling period
 
     int min_n = -999999999;
     int max_n = +999999999;
