@@ -263,7 +263,7 @@ def get_daily_features(symbol : str) -> pandas.DataFrame or None:
     keep = has_min_values & valid_ranges & (stds > 0) & (previous_days_close > 0) & (l >= 0.35)
     
     c0_E0 = -1.1924 * l
-    c1_E0 = c0_E0**2 / 4 - 1 / 27
+    c1_E0 = (c0_E0**2 / 4 - 1 / 27)**0.5
     
     E0 = (-c0_E0/2 + c1_E0)**(1/3) + (-c0_E0/2 - c1_E0)**(1/3) # E(n=0)
     
