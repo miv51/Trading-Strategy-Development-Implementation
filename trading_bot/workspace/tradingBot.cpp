@@ -338,7 +338,7 @@ void tradingBot::start()
 									average_volume = 0;
 
 									//assumes MIN_COMPLETED_TRADING_DAYS >= AVERAGE_VOLUME_PERIOD
-									for (bar_ptr; bar_ptr >= &daily_bars[i].back() - model.ranges.average_volume_period; bar_ptr--) average_volume += bar_ptr->v;
+									for (bar_ptr; bar_ptr > &daily_bars[i].back() - model.ranges.average_volume_period; bar_ptr--) average_volume += bar_ptr->v;
 
 									average_volume /= model.ranges.average_volume_period;
 
