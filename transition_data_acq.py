@@ -31,9 +31,9 @@ one_minute = pandas.Timedelta('1Min')
 one_second = pandas.Timedelta('1S')
 
 end = pandas.Timestamp.today('UTC').floor('1D')
-start = end - (4 * 366 + lookback) * one_day
+start = end - (4 * 366 + int(1.5 * lookback)) * one_day
 
-start_date_trans = start + lookback * one_day
+start_date_trans = start + int(1.5 * lookback) * one_day
 
 start_date = start.strftime('%Y-%m-%d')
 end_date = end.strftime('%Y-%m-%d')
