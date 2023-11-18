@@ -87,7 +87,7 @@ The bot is allowed to trade pre market, and it uses limit orders when buying and
 Will add this when I have enough data.
 
 ## Part 8 : Known Issues
-* Can receive an unexpected 301 error when canceling orders.
+* Can receive an unexpected 301 error when canceling orders (extremely rare occurrence) that will cause the bot to shut down (gracefully).
 * There MIGHT still be some unhandled 422 errors when replacing some orders that may cause the bot to shut down (gracefully).
 * The bot does not send orders to close all positions as expected.
 
