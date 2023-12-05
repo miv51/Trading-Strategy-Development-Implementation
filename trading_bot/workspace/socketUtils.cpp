@@ -239,7 +239,13 @@ int SSLSocket::read(void* buffer, const int buffer_size)
 	error_read = SSL_get_error(ssl_struct, bytes_read);
 
 	if (error_read == SSL_ERROR_ZERO_RETURN) throw SSLNoReturn();
-	if (error_read != SSL_ERROR_WANT_READ) throw exceptions::exception("SSL error occured when reading.");
+	if (error_read != SSL_ERROR_WANT_READ)
+	{
+		unsigned long ssl_error = ERR_get_error();
+
+		throw exceptions::exception(std::string("SSL error occured when reading - ssl error no. ") + std::to_string(error_read) + \
+			std::string(" with error no. ") + std::to_string(ssl_error));
+	}
 
 	return 0;
 }
@@ -247,13 +253,19 @@ int SSLSocket::read(void* buffer, const int buffer_size)
 int SSLSocket::write(const std::string& message)
 {
 	bytes_write = SSL_write(ssl_struct, message.c_str(), message.size());
-
+	
 	if (bytes_write > 0) return bytes_write;
 
 	error_write = SSL_get_error(ssl_struct, bytes_write);
 
 	if (error_write == SSL_ERROR_ZERO_RETURN) throw SSLNoReturn();
-	if (error_write != SSL_ERROR_WANT_WRITE) throw exceptions::exception("SSL error occured when writing.");
+	if (error_write != SSL_ERROR_WANT_WRITE)
+	{
+		unsigned long ssl_error = ERR_get_error();
+
+		throw exceptions::exception(std::string("SSL error occured when writing - ssl error no. ") + std::to_string(error_write) + \
+			std::string(" with error no. ") + std::to_string(ssl_error));
+	}
 
 	return 0;
 }
