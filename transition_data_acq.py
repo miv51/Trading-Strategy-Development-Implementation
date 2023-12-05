@@ -38,7 +38,7 @@ start_date_trans = start + int(1.5 * lookback) * one_day
 start_date = start.strftime('%Y-%m-%d')
 end_date = end.strftime('%Y-%m-%d')
 
-out_file = 'C:\\Users\\Michael\\Desktop\\transitions.csv'
+out_file = 'transitions.csv'
 
 columns = ['vsum', 'rolling_vsum', 'rolling_csum', 'dp', 'dt', 'n_time', 'price', 'size', 'n', 'transition', 't_time',
            'throughtput', 'previous_days_close', 'average_volume', 'symbol', 'mean', 'std', 'p(-dx)', 'p(+dx)', 'E0',
