@@ -307,6 +307,19 @@ def get_transitions_for(symbol : str, daily_data : pandas.DataFrame, lock : mult
                 
                 tick_data_size = tick_data.memory_usage(index=True, deep=True).sum() # data size in bytes
                 
+                if not len(tick_data): break
+                
+                tick_data['p'] *= price_ratio # adjust tick data for splits and dividends
+                tick_data['s'] *= volume_ratio # adjust volume for splits (should be close to 1.0 / price_ratio)
+                
+                tick_data.sort_index(inplace=True)
+                
+                tick_data['m'] = tick_data.index.floor('1Min') - one_minute
+                
+                tick_data = tick_data.merge(minute_data, how='outer', left_on='m', right_index=True)
+                
+                tick_data['vsum'].ffill(inplace=True)
+                
                 tick_data = tick_data[tick_data['s'] >= 100]
                 tick_data = tick_data[tick_data['x'] != 'D'] # FINRA
                 tick_data = tick_data[~tick_data['c'].astype(str).str.contains("'Z'")] # out of seq (reg)
@@ -320,17 +333,6 @@ def get_transitions_for(symbol : str, daily_data : pandas.DataFrame, lock : mult
                 del tick_data['z']
                 
                 if 'u' in tick_data.columns: del tick_data['u']
-                
-                tick_data['p'] *= price_ratio # adjust tick data for splits and dividends
-                tick_data['s'] *= volume_ratio # adjust volume for splits (should be close to 1.0 / price_ratio)
-                
-                tick_data.sort_index(inplace=True)
-                
-                tick_data['m'] = tick_data.index.floor('1Min') - one_minute
-                
-                tick_data = tick_data.merge(minute_data, how='outer', left_on='m', right_index=True)
-                
-                tick_data['vsum'].fillna(0, inplace=True)
                 
                 tick_data.dropna(inplace=True)
                 
