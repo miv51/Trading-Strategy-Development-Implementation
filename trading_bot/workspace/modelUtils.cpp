@@ -80,6 +80,7 @@ void setInputScale(const feature& current_feature, MLModel& model)
         assignLogScale(current_feature, model.ranges.min_rvol, model.ranges.max_rvol, 1, model);
 
         if (model.ranges.min_rvol < 0.0F) model.ranges.min_rvol = 0.0F;
+        if (model.ranges.max_rvol < 0.0F) model.ranges.max_rvol = 0.0F;
     }
     else if (current_feature.name == "n") assignScale(current_feature, model.ranges.min_n, model.ranges.max_n, 2, model);
     else if (current_feature.name == "mean") assignLogScale(current_feature, model.ranges.min_mean, model.ranges.max_mean, 3, model);
@@ -97,6 +98,7 @@ void setInputScale(const feature& current_feature, MLModel& model)
         assignLogScale(current_feature, model.ranges.rolling_period_min_trades, model.ranges.rolling_period_max_trades, 10, model);
 
         if (model.ranges.rolling_period_min_trades < 5) model.ranges.rolling_period_min_trades = 5;
+        if (model.ranges.rolling_period_max_trades < 5) model.ranges.rolling_period_max_trades = 5;
     }
     else if (current_feature.name == "rolling_vsum") assignLogScale(current_feature, model.ranges.rolling_volume_min, model.ranges.rolling_volume_max, 11, model);
     else if (current_feature.name == "p(-dx)") assignLogScale(current_feature, model.ranges.min_pmdx, model.ranges.max_pmdx, 12, model);
@@ -106,7 +108,8 @@ void setInputScale(const feature& current_feature, MLModel& model)
     {
         assignLogScale(current_feature, model.ranges.min_lambda, model.ranges.max_lambda, 15, model);
 
-        if (model.ranges.min_lambda < 0.35F) model.ranges.max_lambda = 0.35F;
+        if (model.ranges.min_lambda < 0.35F) model.ranges.min_lambda = 0.35F;
+        if (model.ranges.max_lambda < 0.35F) model.ranges.max_lambda = 0.35F;
     }
     else throw exceptions::exception("Received an unknown input parameter.");
 }
