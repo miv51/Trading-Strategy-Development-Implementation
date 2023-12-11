@@ -341,7 +341,7 @@ def get_transitions_for(symbol : str, daily_data : pandas.DataFrame, lock : mult
                 del tick_data['m']
                 del minute_data
                 
-                # for time periods in rolling windows, rolling period is than (not less than or equal to) specified period (2S in this case)
+                # for time periods in rolling windows, rolling period is less than (not less than or equal to) specified period (2S in this case)
                 window = tick_data.rolling('2S', min_periods=1)
                 
                 tick_data['ns'] = tick_data.index
