@@ -88,8 +88,8 @@ After observing the orders placed by the bot over the past two months - on a day
 
 Condition | Action
 --- | ---
--1 | Modified
-0 | Added
+rolling_csum >= 10 | Modified
+rolling_vsum * entry_price >= 10000 | Added
 
 The fact that both rolling_vsum and rolling_csum have very low feature importances - as shown in <code/> transition_data_EDA_and_strategy_dev.ipynb </code> - suggests that the model should make predictions just as well on the subset of transitions with these additional constraints as the original set. The model was therefore re-evaluated (not re-trained) with those modified/additional conditions and as shown in the chart below, the simulated backtest still shows a net profit over the unseen two-month period. <br>
 
