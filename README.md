@@ -99,6 +99,5 @@ Although the trading strategy itself doesn't seem to be effective, the model use
 
 ## Part 8 : Known Issues
 * Can receive an unexpected 301 error when canceling and replacing orders (extremely rare occurrence) that will cause the bot to shut down (gracefully). **SHOULD BE FIXED NOW**
-* There MIGHT still be some unhandled 422 errors when replacing some orders that may cause the bot to shut down (gracefully).
 * The bot does not send orders to close all positions as expected.
 
