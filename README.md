@@ -98,6 +98,6 @@ The fact that both rolling_vsum and rolling_csum have very low feature importanc
 Although the trading strategy itself doesn't seem to be effective, the model used to generate trading signals maintained its predictive capability over the past two months. 
 
 ## Part 8 : Known Issues
-* Can receive an unexpected 301 error when canceling and replacing orders (extremely rare occurrence) that will cause the bot to shut down (gracefully). **SHOULD BE FIXED NOW**
+* Can receive an unexpected 301 error when canceling and replacing orders (extremely rare occurrence) that will cause the bot to shut down (gracefully). This issue occurs because the bot does not handle rejected orders as intended.
 * The bot does not send orders to close all positions as expected.
 
