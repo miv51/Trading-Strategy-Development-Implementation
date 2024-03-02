@@ -134,9 +134,10 @@ def calc_risk_and_reward(data):
     data['lower_transition_price'] = quantum_price_levels(data, -1)
     data['upper_transition_price'] = quantum_price_levels(data, 1)
     data['current_price'] = quantum_price_levels(data, 0)
-    
-    data['risk_per_share'] = data['current_price'] - data['lower_transition_price']
-    data['reward_per_share'] = data['upper_transition_price'] - data['current_price']
+
+    data['slippage'] = data['price'] * (numpy.exp(0.5 * numpy.abs(numpy.log(data['dp']))) - 1) # estimate slippage using the relative price change (dp)
+    data['risk_per_share'] = data['current_price'] - data['lower_transition_price'] + data['slippage']
+    data['reward_per_share'] = data['upper_transition_price'] - data['current_price'] - data['slippage']
     
 def find_max_drawdowns(profit, num_paths):
     
@@ -343,6 +344,9 @@ for segment in range((total_segments - train_segments) // test_segments):
     
     calc_risk_and_reward(train_data)
     calc_risk_and_reward(test_data)
+
+    train_data = train_data[(train_data['rolling_vsum'] * train_data['current_price'] >= 10000) & (train_data['rolling_csum'] >= 10)]
+    test_data = test_data[(test_data['rolling_vsum'] * test_data['current_price'] >= 10000) & (test_data['rolling_csum'] >= 10)]
     
     calc_profit_and_buy_signals(train_data, potential_loss)
     calc_profit_and_buy_signals(test_data, potential_loss)
