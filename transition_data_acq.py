@@ -527,8 +527,8 @@ def get_all_symbols(exchanges : list[str]) -> list[str]:
 if __name__ == '__main__':
     t = time.time()
     
-    n_threads = 5
-    n_processes = 5
+    n_threads = 6
+    n_processes = 4
     exchanges = ['NASDAQ', 'NYSE']
     
     symbol_queue = multiprocessing.Queue()
