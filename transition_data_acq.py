@@ -21,6 +21,7 @@ secretKey = 'ENTER-SECRET-KEY'
 
 bar_url = 'https://data.alpaca.markets/v2/stocks/bars'
 trade_url = 'https://data.alpaca.markets/v2/stocks/trades'
+quote_url = 'https://data.alpaca.markets/v2/stocks/quotes'
 stock_url = 'https://paper-api.alpaca.markets/v2/assets'
 
 headers = {'APCA-API-KEY-ID':apiKey, 'APCA-API-SECRET-KEY':secretKey}
@@ -31,7 +32,7 @@ one_minute = pandas.Timedelta('1Min')
 one_second = pandas.Timedelta('1S')
 
 end = pandas.Timestamp.today('UTC').floor('1D')
-start = end - (4 * 366 + int(1.5 * lookback)) * one_day
+start = end - (5 * 366 + int(1.5 * lookback)) * one_day
 
 start_date_trans = start + int(1.5 * lookback) * one_day
 
@@ -40,9 +41,9 @@ end_date = end.strftime('%Y-%m-%d')
 
 out_file = 'transitions.csv'
 
-columns = ['vsum', 'rolling_vsum', 'rolling_csum', 'dp', 'dt', 'n_time', 'price', 'size', 'n', 'transition', 't_time',
-           'throughtput', 'previous_days_close', 'average_volume', 'symbol', 'mean', 'std', 'p(-dx)', 'p(+dx)', 'E0',
-           'lambda']
+columns = ['vsum', 'rolling_vsum', 'rolling_csum', 'dp', 'dt', 'n_time', 'price', 'size', 'last_bid', 'last_ask', 'n',
+           'transition', 't_time', 'throughtput', 'previous_days_close', 'average_volume', 'symbol', 'mean', 'std',
+           'p(-dx)', 'p(+dx)', 'E0', 'lambda']
 
 class RetryException(Exception): pass # raise when we want to retry a request
 class RequestException(Exception): pass # raise when we get a status code we didn't expect or account for
@@ -159,6 +160,40 @@ def get_trades_for(symbol : str, start : str, end : str) -> pandas.DataFrame or 
         page_token = new_data['next_page_token']
         
         data.extend(new_data['trades'][symbol])
+        
+        params['page_token'] = page_token
+        
+    data = pandas.DataFrame(data=data)
+    
+    data['t'] = data['t'].astype('datetime64[ns]').dt.tz_localize('UTC')
+    
+    data.set_index('t', inplace=True)
+    
+    return data
+
+def get_quotes_for(symbol : str, start : str, end : str) -> pandas.DataFrame or None:
+    
+    params = {'start':start, 'end':end, 'limit':10000, 'feed':'sip', 'symbols':symbol, 'page_token':None}
+    page_token = 1 # any non-zero value to allow the loop to start
+    
+    data = []
+    
+    while page_token:
+        request = requests.get(quote_url, params=params, headers=headers)
+        
+        if request.status_code != 200:
+            if request.status_code in [429, 500]: # exceeded rate limit, internal server error
+                time.sleep(5.0)
+                
+                raise RetryException() # resubmit the request
+                
+            raise RequestException(f'Request returned status code {request.status_code}: {request.text}')
+            
+        new_data = json.loads(request.text)
+        
+        page_token = new_data['next_page_token']
+        
+        data.extend(new_data['quotes'][symbol])
         
         params['page_token'] = page_token
         
@@ -305,9 +340,26 @@ def get_transitions_for(symbol : str, daily_data : pandas.DataFrame, lock : mult
                 tick_data = get_trades_for(symbol, date.strftime('%Y-%m-%dT00:00:00Z'),
                                            (date + one_day).strftime('%Y-%m-%dT00:00:00Z'))
                 
-                tick_data_size = tick_data.memory_usage(index=True, deep=True).sum() # data size in bytes
+                quote_data = get_quotes_for(symbol, date.strftime('%Y-%m-%dT00:00:00Z'),
+                                           (date + one_day).strftime('%Y-%m-%dT00:00:00Z'))
                 
-                if not len(tick_data): break
+                tick_data_size = tick_data.memory_usage(index=True, deep=True).sum() # data size in bytes
+                quote_data_size = quote_data.memory_usage(index=True, deep=True).sum()
+                
+                if not (len(tick_data) * len(quote_data)): break
+                
+                quote_data['bp'] *= price_ratio # adjust quote bid data for splits and dividends
+                quote_data['ap'] *= price_ratio # adjust quote ask data for splits and dividends
+                
+                del quote_data['as']
+                del quote_data['ax']
+                del quote_data['bs']
+                del quote_data['bx']
+                
+                del quote_data['c']
+                del quote_data['z']
+                
+                quote_data.sort_index(inplace=True)
                 
                 tick_data['p'] *= price_ratio # adjust tick data for splits and dividends
                 tick_data['s'] *= volume_ratio # adjust volume for splits (should be close to 1.0 / price_ratio)
@@ -344,6 +396,9 @@ def get_transitions_for(symbol : str, daily_data : pandas.DataFrame, lock : mult
                 # for time periods in rolling windows, rolling period is less than (not less than or equal to) specified period (2S in this case)
                 window = tick_data.rolling('2S', min_periods=1)
                 
+                quote_data['ns_q'] = quote_data.index
+                quote_data['ns_q'] = quote_data['ns_q'].astype(numpy.uint64)
+                
                 tick_data['ns'] = tick_data.index
                 tick_data['ns'] = tick_data['ns'].astype(numpy.uint64)
                 
@@ -352,6 +407,11 @@ def get_transitions_for(symbol : str, daily_data : pandas.DataFrame, lock : mult
                 
                 tick_data['dp'] = window['p'].apply(window_diff, raw=True)
                 tick_data['dt'] = 1e-9 * window['ns'].apply(window_diff, raw=True)
+                
+                tick_data = pandas.merge_asof(tick_data, quote_data, left_on='ns', right_on='ns_q',
+                                              allow_exact_matches=False, direction='backward')
+                del quote_data
+                del tick_data['ns_q']
                 
                 tick_data.set_index('ns', inplace=True)
                 
@@ -374,11 +434,15 @@ def get_transitions_for(symbol : str, daily_data : pandas.DataFrame, lock : mult
                 n_tick['n_time'] = tick_data.index[0]
                 n_tick['price'] = n_tick['p']
                 n_tick['size'] = n_tick['s']
+                n_tick['last_bid'] = n_tick['bp']
+                n_tick['last_ask'] = n_tick['ap']
                 
                 del n_tick['p']
                 del n_tick['s']
+                del n_tick['bp']
+                del n_tick['ap']
                 
-                for tick_time, price, size, vsum, rolling_vsum, rolling_csum, dp, dt in tick_data.itertuples():
+                for tick_time, price, size, vsum, rolling_vsum, rolling_csum, dp, dt, ap, bp in tick_data.itertuples():
                     new_n = n
                     
                     while price <= get_price_level(new_n-1): new_n -= 1
@@ -391,7 +455,8 @@ def get_transitions_for(symbol : str, daily_data : pandas.DataFrame, lock : mult
                         
                         n = new_n
                         n_tick = {'vsum':vsum, 'rolling_vsum':rolling_vsum, 'rolling_csum':rolling_csum,
-                                  'dp':dp, 'dt':dt, 'price':price, 'size':size, 'n_time':tick_time}
+                                  'dp':dp, 'dt':dt, 'price':price, 'size':size, 'n_time':tick_time, 'last_ask':ap,
+                                  'last_bid':bp}
                         
                 n_tick.update({'n':n, 'transition':new_n-n, 't_time':tick_time})
                 
@@ -399,7 +464,7 @@ def get_transitions_for(symbol : str, daily_data : pandas.DataFrame, lock : mult
                 
                 transitions = pandas.DataFrame(data=transitions)
                 
-                transitions['throughtput'] = tick_data_size / len(transitions)
+                transitions['throughtput'] = (tick_data_size + quote_data_size) / len(transitions)
                 transitions['previous_days_close'] = previous_days_close
                 transitions['average_volume'] = average_volume
                 transitions['symbol'] = encoded_symbol
@@ -463,7 +528,7 @@ if __name__ == '__main__':
     t = time.time()
     
     n_threads = 5
-    n_processes = 6
+    n_processes = 5
     exchanges = ['NASDAQ', 'NYSE']
     
     symbol_queue = multiprocessing.Queue()
