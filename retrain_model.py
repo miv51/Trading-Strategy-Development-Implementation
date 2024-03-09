@@ -135,7 +135,7 @@ def calc_risk_and_reward(data):
     data['upper_transition_price'] = quantum_price_levels(data, 1)
     data['current_price'] = quantum_price_levels(data, 0)
 
-    data['slippage'] = data['price'] * (numpy.exp(0.5 * numpy.abs(numpy.log(data['dp']))) - 1) # estimate slippage using the relative price change (dp)
+    data['slippage'] = data['last_ask'] - data['last_bid'] # estimate slippage using the spread of the most recent quote update
     data['risk_per_share'] = data['current_price'] - data['lower_transition_price'] + data['slippage']
     data['reward_per_share'] = data['upper_transition_price'] - data['current_price'] - data['slippage']
     
