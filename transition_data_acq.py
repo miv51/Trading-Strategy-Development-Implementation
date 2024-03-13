@@ -19,9 +19,7 @@ lookback = 1024 # in days
 apiKey = 'ENTER-API-KEY'
 secretKey = 'ENTER-SECRET-KEY'
 
-bar_url = 'https://data.alpaca.markets/v2/stocks/bars'
-trade_url = 'https://data.alpaca.markets/v2/stocks/trades'
-quote_url = 'https://data.alpaca.markets/v2/stocks/quotes'
+base_url = 'https://data.alpaca.markets/v2/stocks/'
 stock_url = 'https://paper-api.alpaca.markets/v2/assets'
 
 headers = {'APCA-API-KEY-ID':apiKey, 'APCA-API-SECRET-KEY':secretKey}
@@ -101,109 +99,59 @@ def execute_process_pool(n_processes : int, function : callable, *args, **kwargs
     
     for process in processes: process.join()
     
+def get_data_for(params : dict, symbol : str, data_type : str) -> pandas.DataFrame or None:
+    
+    page_token = 1 # any non-zero value to allow the loop to start
+    
+    data = []
+    
+    while page_token:
+        request = requests.get(base_url + data_type, params=params, headers=headers)
+        
+        if request.status_code != 200:
+            
+            # [429, 500, 502, 504] : exceeded rate limit, internal server error, bad gateway, gateway timeout
+            if request.status_code in [429, 500, 502, 504]:
+                time.sleep(5.0)
+                
+                raise RetryException() # resubmit the request
+                
+            raise RequestException(f'Request returned status code {request.status_code}: {request.text}')
+            
+        new_data = json.loads(request.text)
+        
+        page_token = new_data['next_page_token']
+        
+        if symbol in new_data[data_type]: data.extend(new_data[data_type][symbol])
+        
+        params['page_token'] = page_token
+        
+    data = pandas.DataFrame(data=data)
+    
+    data['t'] = data['t'].astype('datetime64[ns]').dt.tz_localize('UTC')
+    
+    data.set_index('t', inplace=True)
+    
+    return data
+
 def get_bars_for(symbol : str, timeframe : str, start : str, end : str, adjustment : str) -> pandas.DataFrame or None:
     
     params = {'timeframe':timeframe, 'start':start, 'end':end, 'limit':10000,
               'adjustment':adjustment, 'feed':'sip', 'symbols':symbol, 'page_token':None}
     
-    page_token = 1 # any non-zero value to allow the loop to start
-    
-    data = []
-    
-    while page_token:
-        request = requests.get(bar_url, params=params, headers=headers)
-        
-        if request.status_code != 200:
-            if request.status_code in [429, 500]: # exceeded rate limit, internal server error
-                time.sleep(5.0)
-                
-                raise RetryException() # resubmit the request
-                
-            raise RequestException(f'Request returned status code {request.status_code}: {request.text}')
-            
-        new_data = json.loads(request.text)
-        
-        page_token = new_data['next_page_token']
-        
-        data.extend(new_data['bars'][symbol])
-        
-        params['page_token'] = page_token
-        
-    data = pandas.DataFrame(data=data)
-    
-    data['t'] = data['t'].astype('datetime64[ns]').dt.tz_localize('UTC')
-    
-    data.set_index('t', inplace=True)
-    
-    return data
+    return get_data_for(params, symbol, 'bars')
 
 def get_trades_for(symbol : str, start : str, end : str) -> pandas.DataFrame or None:
     
     params = {'start':start, 'end':end, 'limit':10000, 'feed':'sip', 'symbols':symbol, 'page_token':None}
-    page_token = 1 # any non-zero value to allow the loop to start
     
-    data = []
-    
-    while page_token:
-        request = requests.get(trade_url, params=params, headers=headers)
-        
-        if request.status_code != 200:
-            if request.status_code in [429, 500]: # exceeded rate limit, internal server error
-                time.sleep(5.0)
-                
-                raise RetryException() # resubmit the request
-                
-            raise RequestException(f'Request returned status code {request.status_code}: {request.text}')
-            
-        new_data = json.loads(request.text)
-        
-        page_token = new_data['next_page_token']
-        
-        data.extend(new_data['trades'][symbol])
-        
-        params['page_token'] = page_token
-        
-    data = pandas.DataFrame(data=data)
-    
-    data['t'] = data['t'].astype('datetime64[ns]').dt.tz_localize('UTC')
-    
-    data.set_index('t', inplace=True)
-    
-    return data
+    return get_data_for(params, symbol, 'trades')
 
 def get_quotes_for(symbol : str, start : str, end : str) -> pandas.DataFrame or None:
     
     params = {'start':start, 'end':end, 'limit':10000, 'feed':'sip', 'symbols':symbol, 'page_token':None}
-    page_token = 1 # any non-zero value to allow the loop to start
     
-    data = []
-    
-    while page_token:
-        request = requests.get(quote_url, params=params, headers=headers)
-        
-        if request.status_code != 200:
-            if request.status_code in [429, 500]: # exceeded rate limit, internal server error
-                time.sleep(5.0)
-                
-                raise RetryException() # resubmit the request
-                
-            raise RequestException(f'Request returned status code {request.status_code}: {request.text}')
-            
-        new_data = json.loads(request.text)
-        
-        page_token = new_data['next_page_token']
-        
-        data.extend(new_data['quotes'][symbol])
-        
-        params['page_token'] = page_token
-        
-    data = pandas.DataFrame(data=data)
-    
-    data['t'] = data['t'].astype('datetime64[ns]').dt.tz_localize('UTC')
-    
-    data.set_index('t', inplace=True)
-    
-    return data
+    return get_data_for(params, symbol, 'quotes')
 
 def get_daily_features(symbol : str) -> pandas.DataFrame or None:
     
