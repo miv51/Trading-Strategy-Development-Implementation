@@ -26,7 +26,7 @@ template <>
 constexpr inline const char* typeToString<float>() noexcept { return "float"; }
 
 template <typename dataType>
-constexpr inline void throwRuntimeError(const std::string& reason, const std::string& number)
+inline void throwRuntimeError(const std::string& reason, const std::string& number)
 {
     std::string message = reason;
 
@@ -108,7 +108,7 @@ constexpr inline dataType convert(const std::string& number)
 }
 
 //calculate current time of day in nanoseconds since midnight - convert the current hour, minute, second, and fraction of the current second
-inline long long convertUTC(const std::string& timestamp)
+constexpr inline long long convertUTC(const std::string& timestamp)
 {
     if (timestamp.size() < 19) throw std::runtime_error("Invalid format for UTC timestamp.");
 

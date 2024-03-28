@@ -1028,6 +1028,17 @@ constexpr inline size_t encodeString(const std::string& string)
 	return h;
 }
 
+//needed on non-windows machines
+constexpr inline size_t encodeString(const char* string)
+{
+	size_t h = 0;
+	const char* c = string;
+
+	while (*c != '\0') { if (256 * h + *c <= h && *c != '\0') return 0; h = 256 * h + *(c++); }
+
+	return h;
+}
+
 void updateDailyBar(bar& daily_bar, const std::string& key, const std::string& value)
 {
 	//faster than if/else statements - only works when key strings are small

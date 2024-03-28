@@ -9,13 +9,14 @@
 #include <string>
 
 template <typename dataType>
-constexpr size_t hash(const dataType& key)
+constexpr inline size_t hash(const dataType& key)
 {
     throw std::runtime_error("Hash function for specified data type not implemented.");
+    return 0; //wont compile on GCC without this line
 }
 
 template <>
-constexpr size_t hash<std::string>(const std::string& key)
+constexpr inline size_t hash<std::string>(const std::string& key)
 {
     size_t h = 0;
 
