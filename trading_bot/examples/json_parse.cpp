@@ -14,10 +14,10 @@ int main()
 
     std::cout << "Original Json Object - " << json_object0 << "\n\n";
 
+    JSONParser parser;
     dictionary key_value_pairs0; //typedef std::unordered_map<std::string, std::string> dictionary;
-
-    preProcessJSON(json_object0); //transforms {"key0":"value0", "key1":3.1415, "key2":null} into "key0":"value0", "key1":3.1415, "key2":null,
-    parseJSON(key_value_pairs0, json_object0); //adds key value pairs to a dictionary
+    
+    parser.parseJSON(key_value_pairs0, json_object0); //adds key value pairs to a dictionary
 
     std::cout << "Parsed Json Object key : value pairs" << std::endl;
 
@@ -28,9 +28,8 @@ int main()
     std::cout << "Original Json Object - " << json_object1 << "\n\n";
 
     dictionary key_value_pairs1;
-
-    preProcessJSON(json_object1);
-    parseJSON(key_value_pairs1, json_object1);
+    
+    parser.parseJSON(key_value_pairs1, json_object1);
 
     std::cout << "Parsed Json Object key : value pairs" << std::endl;
 
