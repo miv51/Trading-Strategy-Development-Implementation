@@ -78,7 +78,7 @@ The bot will start by obtaining a list of all tradable assets on NYSE and NASDAQ
 
 After that, the bot will start one websocket stream that gathers trade and bar updates and will listen for minute bar updates while using the http clients to compute the accumulated daily volumes of each stock. The websocket and http clients are run together asynchronously during this period. <br>
 
-After that, the bot will subscribe to individual trade updates on the first websocket and start the account update websocket and continue to run both of those asynchronously. If the bot reaches this stage before 8:01am (the specified starting trading time for this bot) then the bot will wait until then to start trading. <br>
+After that, the bot will subscribe to individual trade and quote updates on the first websocket and start the account update websocket and continue to run both of those asynchronously. If the bot reaches this stage before 8:01am or 9:31am when the bot uses market orders (the specified starting trading time for this bot) then the bot will wait until then to start trading. <br>
 
 The bot will stop trading at 3:55pm and then will repeat the process described above.
 
