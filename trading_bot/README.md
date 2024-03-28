@@ -26,8 +26,8 @@ key2 : null
 Original Json Object - {"jsonArray":[0, 1, 2, 4, -6], "nestedJsonObject":{"a":"Hello World!", "b":false}}
 
 Parsed Json Object key : value pairs
-jsonArray : [0, 1, 2, 4, -6]
-nestedJsonObject : {"a":"Hello World!", "b":false}
+jsonArray : 0, 1, 2, 4, -6
+nestedJsonObject : "a":"Hello World!", "b":false
 ```
 
 <br> The following output is for the array of json objects.
