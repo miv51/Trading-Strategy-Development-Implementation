@@ -11,10 +11,10 @@ template <typename type, size_t N>
 class array
 {
 public:
-    constexpr size_t size() const noexcept { return length; }
-    constexpr size_t capacity() const noexcept { return N; }
+    constexpr inline size_t size() const noexcept { return length; }
+    constexpr inline size_t capacity() const noexcept { return N; }
 
-    constexpr void push_back(const type& object)
+    constexpr inline void push_back(const type& object)
     {
         if (length >= N) throw std::runtime_error("Array type cannot contain more than the specified capacity.");
 
@@ -23,26 +23,26 @@ public:
         length++;
     }
 
-    constexpr void pop_back()
+    constexpr inline void pop_back()
     {
         if (length <= 0) throw std::runtime_error("Cannot pop from an empty array.");
 
         length--;
     }
 
-    constexpr void clear() noexcept
+    constexpr inline void clear() noexcept
     {
         length = 0;
     }
 
-    constexpr type& back()
+    constexpr inline type& back()
     {
         if (length < 1) throw std::runtime_error("Cannot retrieve data from an empty array.");
 
         return elements[length - 1];
     }
 
-    constexpr type& operator[](size_t index)
+    constexpr inline type& operator[](size_t index)
     {
         if (index >= length) throw std::runtime_error("Cannot retrieve data outside of the array.");
 

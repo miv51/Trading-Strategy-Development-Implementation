@@ -23,6 +23,10 @@ void ntpClient::update()
 	local_time.tm_sec = 0;
 
 	sec_since_epoch_trunc_day = mktime(&local_time);
+
+	if (local_time.tm_isdst < 0) throw exceptions::exception("Could not retrieve information about daylight savings.");
+
+	is_daylight_savings = local_time.tm_isdst;
 	iso_weekday = local_time.tm_wday;
 
 	std::strftime(date, sizeof(date), "%Y-%m-%d", &local_time);

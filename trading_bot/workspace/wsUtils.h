@@ -53,6 +53,7 @@ constexpr char WS_LARGE_MESSAGE_MASK_CHAR = char(1 << 7 | 0x7f);
 
 //construct the frame header of the message
 constexpr char constructBaseFrame(const uint8_t, const uint8_t, const uint8_t, const uint8_t, const uint8_t);
+constexpr char constructBaseFrame(const uint8_t, const uint8_t);
 
 //evaluate the expected frame headers and the closing frame at runtime since it will be the same in all messages for this application
 const char WS_TEXT_FRAME = constructBaseFrame(1, 0, 0, 0, 0x1);
@@ -74,7 +75,7 @@ somewhat supports nonblocking I/O - if recv is called and there is a message to 
 class websocket : public SSLSocket
 {
 public:
-	websocket(const SSLContextWrapper&, const std::string, const bool, const time_t);
+	websocket(const SSLContextWrapper&, const std::string, const bool, const bool, const time_t);
 	~websocket();
 
 	/*
@@ -92,9 +93,10 @@ public:
 	*/
 
 	int send(const std::string&, const char);
-	void recv(std::string&);
+	bool recv(std::string&); //returns true if a message was received - only need to check for non-blocking I/O
 
 private:
+	bool signal_on_control; //recv returns whatever this flag is set to when a ping frame is received
 	bool opened;
 
 	char frame_header;

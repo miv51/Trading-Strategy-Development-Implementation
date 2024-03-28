@@ -21,11 +21,13 @@ void appendWeights(const std::string& weight_string, layerWeightContainer& layer
 
 void parseLayerWeights(std::string& weight_string, const std::string& key, const std::string& value)
 {
-    if (key == "weights") weight_string = value.substr(1, weight_string.size() - 2) + ',';
+    if (key == "weights") weight_string = value + ',';
 }
 
 void layerUpdateFunc(const std::string& weight_sets, weightContainer& weights)
 {
+    if (weight_sets.size() < 2) return; //layer has no weights
+
     JSONArrayParser<std::string, layerWeightContainer, parseLayerWeights, appendWeights> layerParser;
     layerWeightContainer layer_weights;
 
@@ -33,8 +35,6 @@ void layerUpdateFunc(const std::string& weight_sets, weightContainer& weights)
 
     try
     {
-        preProcessJSONArray(weight_sets__);
-
         layerParser.parseJSONArray(weight_sets__, layer_weights);
 
         weights.push_back(layer_weights);
@@ -140,8 +140,6 @@ void MLModel::loadWeights(const std::string& file_path)
     JSONArrayParser<std::string, weightContainer, loadLayerWeights, layerUpdateFunc> layerParser;
     weightContainer model_weights;
 
-    preProcessJSONArray(content);
-
     layerParser.parseJSONArray(content, model_weights);
 
     if (model_weights.size() != 7) throw exceptions::exception("Received an unexpected number of layers.");
@@ -169,8 +167,6 @@ void MLModel::loadScales(const std::string& file_path)
     file.close();
 
     JSONArrayParser<feature, MLModel, loadInputScale, setInputScale> layerParser;
-    
-    preProcessJSONArray(content);
 
     layerParser.parseJSONArray(content, *this);
 }
@@ -194,7 +190,7 @@ float MLModel::predict(float time_of_day, float relative_volume, float n, float 
     input[13] = (std::log(1e-9 + size) - means[13]) / stds[13]; //size
     input[14] = (std::log(1e-9 + ppdx) - means[14]) / stds[14]; //p(+dx)
     input[15] = (std::log(1e-9 + lambda) - means[15]) / stds[15]; //lambda
-    
+
     neural_net(input);
 
     return neural_net.output[2]; //first, second, and third elements are the probabilities of -1, 0, and +1 transitions respectively

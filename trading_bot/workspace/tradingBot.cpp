@@ -14,11 +14,35 @@ tradingBot::tradingBot(const SSLContextWrapper& SSL_context_wrapper, const std::
 	time_proto()
 {}
 
+inline void sleepFor(time_t sleep_time)
+{
+	std::this_thread::sleep_for(std::chrono::seconds(sleep_time));
+}
+
 inline double roundPrice(const double price) //limit prices under 1 USD can have up to four decimal places, otherwise they can have up to two
 {
 	if (price < 1.0) return std::round(price * 10000.0) / 10000.0;
 
 	return std::round(price * 100.0) / 100.0;
+}
+
+//perform http get request until it is completed without the socket closing (this happens very rarely)
+inline void getUntil(const SSLContextWrapper& ssl_context_wrapper, http::httpResponse& response, const dictionary& parameters, const dictionary& headers,
+	const std::string& host, const std::string& path, time_t timeout, int allowed_retries)
+{
+	while (allowed_retries > 0)
+	{
+		try { http::get(ssl_context_wrapper, response, parameters, headers, host, path, timeout); return; }
+		catch (const SSLNoReturn&)
+		{
+			response.clear();
+			sleepFor(timeout);
+		}
+
+		allowed_retries--;
+	}
+
+	throw exceptions::exception(std::string("Http get request failed to complete within ") + std::to_string(allowed_retries) + std::string(" attempts."));
 }
 
 void tradingBot::start()
@@ -29,13 +53,29 @@ void tradingBot::start()
 		{
 			time_proto.update();
 
+#ifdef USE_MARKET_ORDERS
+
+			//market orders can only be executed during regular market hours (9:30am - 4pm EST)
+			const int start_hour = 9;
+			const int start_minute = 31;
+
+			const int data_start_hour = 9; //start gathering data at this hour
+			const int data_start_minute = 26; //start gathering data at this minute of the specified data_start_hour
+#else
+			const int start_hour = 8;
+			const int start_minute = 0;
+
+			const int data_start_hour = 8;
+			const int data_start_minute = 0;
+#endif
+
 #ifndef TRADE_BOT_DEBUG
 
 			if (time_proto.iso_weekday == 6) //if today is saturday sleep until monday
 			{
 				std::cout << "SLEEPING UNTIL MONDAY" << std::endl;
 
-				time_t sleep_time = time_proto.getSecondsSinceEpoch(2, 8, 0, 0) - time(nullptr); //sleep until 8am on the next day
+				time_t sleep_time = time_proto.getSecondsSinceEpoch(2, data_start_hour, data_start_minute, 0) - time(nullptr); //sleep until the starting time of the next day
 
 				std::this_thread::sleep_for(std::chrono::seconds(sleep_time));
 
@@ -47,16 +87,16 @@ void tradingBot::start()
 			{
 				std::cout << "SLEEPING UNTIL TOMORROW" << std::endl;
 
-				time_t sleep_time = time_proto.getSecondsSinceEpoch(1, 8, 0, 0) - time(nullptr); //sleep until 8am on the next day
+				time_t sleep_time = time_proto.getSecondsSinceEpoch(1, data_start_hour, data_start_minute, 0) - time(nullptr); //sleep until starting time of the next day
 
 				std::this_thread::sleep_for(std::chrono::seconds(sleep_time));
 
 				continue;
 			}
 
-			time_t sleep_time = time_proto.getSecondsSinceEpoch(0, 8, 0, 0) - time(nullptr); //sleep until 8am today
+			time_t sleep_time = time_proto.getSecondsSinceEpoch(0, data_start_hour, data_start_minute, 0) - time(nullptr); //sleep until starting time of today
 
-			if (sleep_time > 0) std::this_thread::sleep_for(std::chrono::seconds(sleep_time));
+			if (sleep_time > 0) sleepFor(sleep_time);
 
 			/*
 			check to see if today is a market holiday
@@ -65,13 +105,14 @@ void tradingBot::start()
 				otherwise set the close time to 3:55pm EST
 			*/
 
-			time_t trading_start_time = time_proto.getSecondsSinceEpoch(0, 8, 1, 0);
+			time_t trading_start_time = time_proto.getSecondsSinceEpoch(0, start_hour, start_minute, 0);
 			time_t trading_end_time = time_proto.getSecondsSinceEpoch(0, 15, 55, 0);
 #else
 			time_t trading_start_time = time_proto.getSecondsSinceEpoch(0, 0, 0, 0);
 			time_t trading_end_time = time_proto.getSecondsSinceEpoch(2, 0, 0, 0);
 #endif
 			time_t timeout = 10; //timeout in seconds
+			int allowed_retries = 6; //number of times some requests can be retried
 
 			dictionary headers;
 			dictionary parameters;
@@ -88,28 +129,37 @@ void tradingBot::start()
 			headers["Connection"] = "close";
 
 			dictionary response_data; //data from the last full http response
+			JSONParser json_parser; //general json parser for individual json objects
 
 #ifndef TRADE_BOT_DEBUG
 
-			http::get(ssl_context_wrapper, response, parameters, headers, account_endpoint, "/v2/calendar", timeout);
+			getUntil(ssl_context_wrapper, response, parameters, headers, account_endpoint, "/v2/calendar", timeout, allowed_retries);
 
 			if (response.status_code != 200) throw exceptions::exception(std::to_string(response.status_code) + " status code not accounted for.");
+			if (response.message.size() < 4) //on some holidays, an empty array is received - so assume today is a holiday
+			{
+				std::cout << "RECEIVED NO DATA FROM CALENDAR - ASSUMING TODAY IS A HOLIDAY - SLEEPING UNTIL TOMORROW" << std::endl;
 
-			preProcessJSONArray(response.message); response.message.pop_back();
-			preProcessJSON(response.message);
-			parseJSON(response_data, response.message);
+				time_t sleep_time = time_proto.getSecondsSinceEpoch(1, data_start_hour, data_start_minute, 0) - time(nullptr); //sleep until starting time of the next day
+
+				sleepFor(sleep_time);
+
+				continue;
+			}
+
+			json_parser.parseJSON(response_data, response.message);
 
 			if (response_data.find("close") == response_data.end()) throw exceptions::exception("Could not obtain today's closing time.");
 			if (response_data.find("open") == response_data.end()) throw exceptions::exception("Could not obtain today's opening time.");
 
 			//if the closing time is not 4pm or the starting time is not 9:30am then today is a holiday (including early-close) sleep until the next day
-			if (response_data["close"] != "16:00" || response_data["open"] != "09:30")
+			if (response_data["close"] != std::string("16:00") || response_data["open"] != std::string("09:30"))
 			{
 				std::cout << "TODAY IS A HOLIDAY - SLEEPING UNTIL TOMORROW" << std::endl;
 
-				time_t sleep_time = time_proto.getSecondsSinceEpoch(1, 8, 0, 0) - time(nullptr); //sleep until 8am on the next day
+				time_t sleep_time = time_proto.getSecondsSinceEpoch(1, data_start_hour, data_start_minute, 0) - time(nullptr); //sleep until starting time of the next day
 
-				std::this_thread::sleep_for(std::chrono::seconds(sleep_time));
+				sleepFor(sleep_time);
 
 				continue;
 			}
@@ -124,7 +174,7 @@ void tradingBot::start()
 			parameters.clear();
 			response.clear();
 
-			http::get(ssl_context_wrapper, response, parameters, headers, account_endpoint, "/v2/account", timeout);
+			getUntil(ssl_context_wrapper, response, parameters, headers, account_endpoint, "/v2/account", timeout, allowed_retries);
 
 			if (response.status_code != 200) throw exceptions::exception(std::to_string(response.status_code) + " status code not accounted for.");
 
@@ -142,7 +192,7 @@ void tradingBot::start()
 
 			response.clear();
 
-			http::get(ssl_context_wrapper, response, parameters, headers, account_endpoint, "/v2/assets", timeout);
+			getUntil(ssl_context_wrapper, response, parameters, headers, account_endpoint, "/v2/assets", timeout, allowed_retries);
 
 			if (response.status_code != 200) throw exceptions::exception(std::to_string(response.status_code) + " status code not accounted for.");
 
@@ -180,12 +230,14 @@ void tradingBot::start()
 			headers["Connection"] = "keep-alive";
 
 			JSONArrayParser<bar, dailyBarContainer, updateDailyBar, updateDailyData> dailyParser; //used to parse arrays of daily bars
+
 			MLModel model; //contains the MLP and inlier ranges for the inputs
 			time_t START = time(nullptr);
 
-			//load model ranges and weights here - both of the files must be in the same directory
-			model.loadWeights("model_weights.json");
-			model.loadScales("scaler_info.json");
+			//load model ranges and weights here
+			//both of the files must be in the same directory as the executable on Windows (home directory on Mac and Linux - the directory that contains the Desktop folder)
+			model.loadWeights("C:\\Users\\Michael\\Desktop\\qpl_bot_strategy_equities\\x64\\Debug\\model_weights.json");
+			model.loadScales("C:\\Users\\Michael\\Desktop\\qpl_bot_strategy_equities\\x64\\Debug\\scaler_info.json");
 
 			//create multiple http clients with non-blocking I/O to retrieve data - using to many might cause the bot to exceed the api call rate limit
 			const int num_clients = (max_clients > num_symbols_left) ? num_symbols_left : max_clients; //number of http clients to use for asynchronous data retrieval
@@ -196,7 +248,9 @@ void tradingBot::start()
 			std::vector<dictionary> client_parameters;
 			std::vector<dictionary> client_headers;
 			std::vector<size_t> current_symbols; //the indices of the symbols that are currently being evaluated
-			std::vector<bool> retired; //retired[i] is true if data_clients[i] is done being used to gather data
+
+			//checking out of a static array is much faster than doing so out of a vector
+			array<bool, max_clients> retired; //retired[i] is true if data_clients[i] is done being used to gather data
 
 			client_parameters.reserve(num_clients);
 			current_symbols.reserve(num_clients);
@@ -204,8 +258,7 @@ void tradingBot::start()
 			data_clients.reserve(num_clients);
 			daily_bars.reserve(num_clients);
 			responses.reserve(num_clients);
-			retired.reserve(num_clients);
-
+			
 			int i; //loop index
 
 			for (i = 0; i < num_clients; i++)
@@ -287,30 +340,38 @@ void tradingBot::start()
 						current_client.reConnect(); //reconnect to the host
 						current_client.get(client_parameters[i], client_headers[i], "/v2/stocks/bars"); //prepare the get request
 
-						current_status = current_client.recvResponse(current_response); //send the get request - continue;
+						continue;
 					}
 
 					if (current_status == http::status::TIMED_OUT) throw exceptions::exception("Timed out while retrieving stock data.");
 					if (current_status == http::status::RECEIVED_RESPONSE)
 					{
+						if (current_response.status_code == 429)
+						{
+							throw exceptions::exception("Exceeded the Alpaca API Rate limit. Reduce the maximum number of http clients retrieving data.");
+						}
+
+						if (current_response.status_code != 200)
+						{
+							throw exceptions::exception("Received an unexpected status code : " + std::to_string(current_response.status_code)\
+								+ " - with the following message : " + current_response.status_message);
+						}
+
 						response_data.clear();
 						response_data.rehash(4);
 
-						preProcessJSON(current_response.message);
-						parseJSON(response_data, current_response.message);
+						json_parser.parseJSON(response_data, current_response.message);
 
-						symbol& current_symbol = symbols[current_symbols[i]]; //~33% of the runtime in this loop is spent here
+						symbol& current_symbol = symbols[current_symbols[i]];
 
 						if (response_data.find("bars") != response_data.end())
 						{
 							if (response_data["bars"].size() > 2) //if json exists and is not empty
 							{
-								preProcessJSON(response_data["bars"]);
-								parseJSON(response_data, response_data["bars"]); //another ~33% of the runtime in this loop is spent here
-								preProcessJSONArray(response_data[current_symbol.ticker]);
+								json_parser.parseJSON(response_data, response_data["bars"]);
 
 								//read data from daily bars and append it somewhere from here
-								dailyParser.parseJSONArray(response_data[current_symbol.ticker], daily_bars[i]); //another ~33% of the runtime in this loop is spent here
+								dailyParser.parseJSONArray(response_data[current_symbol.ticker], daily_bars[i]);
 
 								if (response_data.find("next_page_token") == response_data.end()) last_page = true;
 								else if (response_data["next_page_token"] == "null") last_page = true;
@@ -522,7 +583,7 @@ void tradingBot::start()
 
 			if (num_symbols_left <= 0) throw exceptions::exception("No stocks available to trade.");
 
-			symbolData final_symbols(ssl_context_wrapper, model, num_symbols_left); //greatly reduce the number of rehashing operations by reserving memory for all the symbols
+			symbolData final_symbols(ssl_context_wrapper, model);
 
 			final_symbols.account_endpoint = account_endpoint;
 			final_symbols.risk_per_trade = risk_per_trade;
@@ -540,11 +601,14 @@ void tradingBot::start()
 
 			for (symbol& Symbol : symbols)
 			{
-				if (!Symbol.is_an_outlier)
-				{
-					final_symbols[Symbol.ticker] = Symbol;
-					tickers.push_back(Symbol.ticker);
-				}
+				if (!Symbol.is_an_outlier) tickers.push_back(Symbol.ticker);
+			}
+
+			final_symbols.initializeKeys(tickers);
+
+			for (symbol& Symbol : symbols)
+			{
+				if (!Symbol.is_an_outlier) final_symbols[Symbol.ticker] = Symbol;
 			}
 
 			/*
@@ -561,26 +625,20 @@ void tradingBot::start()
 
 			//construct the data websocket
 
-			websocket data_ws(ssl_context_wrapper, "stream.data.alpaca.markets", false, timeout); //this websocket receives trade and bar updates
+			websocket data_ws(ssl_context_wrapper, "stream.data.alpaca.markets", false, false, timeout); //this websocket receives trade and bar updates
 
 			std::string last_msg; //the last message received by the data or account websocket
 
 			//prepare the subscription messages
 
-			std::string bar_sub_msg = "{\"action\": \"subscribe\", \"bars\": [";
-			std::string trade_sub_msg = "{\"action\": \"subscribe\", \"trades\": [";
+			std::string symbol_list = "";
 
-			for (const std::string& ticker : tickers)
-			{
-				bar_sub_msg += "\"" + ticker + "\",";
-				trade_sub_msg += "\"" + ticker + "\",";
-			}
+			for (const std::string& ticker : tickers) symbol_list += "\"" + ticker + "\",";
 
-			bar_sub_msg.pop_back(); //remove the trailing comma (",")
-			bar_sub_msg += "]}";
+			symbol_list.pop_back();
 
-			trade_sub_msg.pop_back();
-			trade_sub_msg += "]}";
+			std::string bar_sub_msg = "{\"action\": \"subscribe\", \"bars\": [" + symbol_list + "]}";
+			std::string trade_and_quote_sub_msg = "{\"action\": \"subscribe\", \"quotes\": [" + symbol_list + "], \"trades\": [" + symbol_list + "]}";
 
 			//open the websocket connection and send the bar subscription message
 
@@ -605,14 +663,11 @@ void tradingBot::start()
 
 			//the first message should indicate a successful connection
 
-			do data_ws.recv(last_msg); //ADD TIMEOUT MECH
-			while (!last_msg.size());
+			while (!data_ws.recv(last_msg)) continue; //ADD TIMEOUT MECH
 
 			response_data.clear();
 
-			preProcessJSONArray(last_msg); last_msg.pop_back(); //expecting a JSON array with one json object
-			preProcessJSON(last_msg);
-			parseJSON(response_data, last_msg);
+			json_parser.parseJSON(response_data, last_msg); //expecting a JSON array with one json object
 
 			if (response_data.find("msg") == response_data.end()) throw exceptions::exception("Could not confirm connection for the data websocket.");
 			if (response_data["msg"] != "connected") throw exceptions::exception("Unexpected message received; Expecting \"connected\".");
@@ -621,14 +676,11 @@ void tradingBot::start()
 
 			//the second message should indicate successful authentication
 
-			do data_ws.recv(last_msg); //ADD TIMEOUT MECH
-			while (!last_msg.size());
+			while (!data_ws.recv(last_msg)) continue; //ADD TIMEOUT MECH
 
 			response_data.clear();
 
-			preProcessJSONArray(last_msg); last_msg.pop_back(); //expecting a JSON array with one json object
-			preProcessJSON(last_msg);
-			parseJSON(response_data, last_msg);
+			json_parser.parseJSON(response_data, last_msg); //expecting a JSON array with one json object
 
 			if (response_data.find("msg") == response_data.end()) throw exceptions::exception("Could not verify authentication for the data websocket.");
 			if (response_data["msg"] != "authenticated") throw exceptions::exception("Unexpected message received; Expecting \"authenticated\".");
@@ -639,14 +691,11 @@ void tradingBot::start()
 
 			data_ws.send(bar_sub_msg, WS_TEXT_FRAME);
 
-			do data_ws.recv(last_msg); //ADD TIMEOUT MECH
-			while (!last_msg.size());
+			while (!data_ws.recv(last_msg)) continue; //ADD TIMEOUT MECH
 
 			response_data.clear();
 
-			preProcessJSONArray(last_msg); last_msg.pop_back(); //expecting a JSON array with one json object
-			preProcessJSON(last_msg);
-			parseJSON(response_data, last_msg);
+			json_parser.parseJSON(response_data, last_msg); //expecting a JSON array with one json object
 
 			if (response_data.find("T") == response_data.end()) throw exceptions::exception("Could not subscribe to bar updates.");
 			if (response_data["T"] != "subscription") throw exceptions::exception("Could not subscribe to bar updates.");
@@ -654,19 +703,14 @@ void tradingBot::start()
 			//wait until the first bar update message is received
 			//I didn't include a timeout mechanism here so that the bot won't stop if started long before ...
 			//... the market open time or during trading periods where we may not expect many bar updates
-
-			do data_ws.recv(last_msg);
-			while (!last_msg.size());
+			
+			while (!data_ws.recv(last_msg)) continue;
 
 			//parse the message, update vsums, then set the end time to one minute behind the timestamp received
 
-			if (last_msg.size() >= 2)
-			{
-				preProcessJSONArray(last_msg);
-				updateParser.parseJSONArray(last_msg, final_symbols);
-			}
+			if (last_msg.size() >= 2) updateParser.parseJSONArray(last_msg, final_symbols);
 			else throw exceptions::exception("Did not receive the first minute bar update.");
-
+			
 			//reinitialize the clients to gather minute data
 
 			parameters["timeframe"] = "1Min";
@@ -681,14 +725,14 @@ void tradingBot::start()
 			{
 				if (end_date.substr(11, 2) == "00") throw exceptions::exception("Invalid intraday end date."); //if hour is 0 then the end date is less than the start date
 
-				int previous_hour = std::stoi(end_date.substr(11, 2)) - 1;
+				int previous_hour = convert<int>(end_date.substr(11, 2)) - 1;
 
 				if (previous_hour < 10) end_date = end_date.substr(0, 11) + "0" + std::to_string(previous_hour) + ":59:00Z";
 				else end_date = end_date.substr(0, 11) + std::to_string(previous_hour) + ":59:00Z";
 			}
 			else
 			{
-				int previous_minute = std::stoi(end_date.substr(14, 2)) - 1;
+				int previous_minute = convert<int>(end_date.substr(14, 2)) - 1;
 
 				if (previous_minute < 10) end_date = end_date.substr(0, 14) + "0" + std::to_string(previous_minute) + ":00Z";
 				else end_date = end_date.substr(0, 14) + std::to_string(previous_minute) + ":00Z";
@@ -724,13 +768,7 @@ void tradingBot::start()
 			{
 				//check for websocket message here
 
-				data_ws.recv(last_msg);
-
-				if (last_msg.size() >= 2)
-				{
-					preProcessJSONArray(last_msg);
-					updateParser.parseJSONArray(last_msg, final_symbols);
-				}
+				if (data_ws.recv(last_msg)) updateParser.parseJSONArray(last_msg, final_symbols);
 
 				//continue receiving intraday data from clients
 
@@ -749,16 +787,26 @@ void tradingBot::start()
 						current_client.reConnect();
 						current_client.get(client_parameters[i], client_headers[i], "/v2/stocks/bars");
 
-						current_status = current_client.recvResponse(current_response);
+						continue;
 					}
 
 					if (current_status == http::status::TIMED_OUT) throw exceptions::exception("Timed out while retrieving stock data.");
 					if (current_status == http::status::RECEIVED_RESPONSE)
 					{
+						if (current_response.status_code == 429)
+						{
+							throw exceptions::exception("Exceeded the Alpaca API Rate limit. Reduce the maximum number of http clients retrieving data.");
+						}
+
+						if (current_response.status_code != 200)
+						{
+							throw exceptions::exception("Received an unexpected status code : " + std::to_string(current_response.status_code)\
+								+ " - with the following message : " + current_response.status_message);
+						}
+
 						response_data.clear();
 
-						preProcessJSON(current_response.message);
-						parseJSON(response_data, current_response.message);
+						json_parser.parseJSON(response_data, current_response.message);
 
 						ticker = tickers[current_symbols[i]];
 
@@ -766,9 +814,7 @@ void tradingBot::start()
 						{
 							if (response_data["bars"].size() > 2)
 							{
-								preProcessJSON(response_data["bars"]);
-								parseJSON(response_data, response_data["bars"]);
-								preProcessJSONArray(response_data[ticker]);
+								json_parser.parseJSON(response_data, response_data["bars"]);
 
 								//read data from minute bars and add the volumes to vsums
 								intradayParser.parseJSONArray(response_data[ticker], final_symbols[ticker]);
@@ -820,7 +866,7 @@ void tradingBot::start()
 			... and then and run both websockets asynchronous
 			*/
 
-			websocket account_ws(ssl_context_wrapper, trade_update_stream, false, timeout); //this websocket receives account updates
+			websocket account_ws(ssl_context_wrapper, trade_update_stream, false, false, timeout); //this websocket receives account updates
 
 			ws_headers.erase("APCA-API-KEY-ID");
 			ws_headers.erase("APCA-API-SECRET-KEY");
@@ -842,20 +888,17 @@ void tradingBot::start()
 
 			account_ws.send("{\"action\": \"auth\", \"key\": \"" + alpaca_api_key + "\", \"secret\": \"" + alpaca_secret_key + "\"}", WS_TEXT_FRAME);
 
-			do account_ws.recv(last_msg); //ADD TIMEOUT MECH
-			while (!last_msg.size());
+			while (!account_ws.recv(last_msg)) continue; //ADD TIMEOUT MECH
 
 			response_data.clear();
 
-			preProcessJSON(last_msg);
-			parseJSON(response_data, last_msg);
+			json_parser.parseJSON(response_data, last_msg);
 
 			if (response_data.find("stream") == response_data.end()) throw exceptions::exception("Unknown message received from the account websocket.");
 			if (response_data["stream"] != "authorization") throw exceptions::exception("Unexpected message received from the account websocket.");
 			if (response_data.find("data") == response_data.end()) throw exceptions::exception("Could not confirm authorization for the account websocket.");
 
-			preProcessJSON(response_data["data"]);
-			parseJSON(response_data, response_data["data"]);
+			json_parser.parseJSON(response_data, response_data["data"]);
 
 			if (response_data.find("action") == response_data.end()) throw exceptions::exception("Unknown message received from the account websocket.");
 			if (response_data["action"] != "authenticate") throw exceptions::exception("Could not confirm authorization for the account websocket.");
@@ -867,40 +910,34 @@ void tradingBot::start()
 
 			account_ws.send("{\"action\": \"listen\", \"data\": {\"streams\": [\"trade_updates\"]}}", WS_TEXT_FRAME);
 
-			do account_ws.recv(last_msg); //ADD TIMEOUT MECH
-			while (!last_msg.size());
+			while (!account_ws.recv(last_msg)) continue; //ADD TIMEOUT MECH
 
 			response_data.clear();
 
-			preProcessJSON(last_msg);
-			parseJSON(response_data, last_msg);
+			json_parser.parseJSON(response_data, last_msg);
 
 			if (response_data.find("stream") == response_data.end()) throw exceptions::exception("Unknown message received from the account websocket.");
 			if (response_data["stream"] != "listening") throw exceptions::exception("Unexpected message received from the account websocket.");
 			if (response_data.find("data") == response_data.end()) throw exceptions::exception("Could not subscribe to trade updates for the account websocket.");
 
-			preProcessJSON(response_data["data"]);
-			parseJSON(response_data, response_data["data"]);
+			json_parser.parseJSON(response_data, response_data["data"]);
 
 			if (response_data.find("streams") == response_data.end()) throw exceptions::exception("The account websocket is not listening to any streams.");
 			if (response_data["streams"].find("\"trade_updates\"") == std::string::npos) throw exceptions::exception("The account websocket is not listening for trade updates.");
 
-			//send the trade subscription message and wait for the resulting subscription confirmation
+			//send the trade and quote subscription message and wait for the resulting subscription confirmation
 
-			data_ws.send(trade_sub_msg, WS_TEXT_FRAME);
+			data_ws.send(trade_and_quote_sub_msg, WS_TEXT_FRAME);
 
-			do data_ws.recv(last_msg); //ADD TIMEOUT MECH
-			while (!last_msg.size());
+			while (!data_ws.recv(last_msg)) continue; //ADD TIMEOUT MECH
 
 			response_data.clear();
 
-			preProcessJSONArray(last_msg); last_msg.pop_back(); //expecting a JSON array with one json object
-			preProcessJSON(last_msg);
-			parseJSON(response_data, last_msg);
+			json_parser.parseJSON(response_data, last_msg); //will raise an error if a bar update is received before the subscription confirmation
 
-			if (response_data.find("T") == response_data.end()) throw exceptions::exception("Could not subscribe to trade updates.");
-			if (response_data["T"] != "subscription") throw exceptions::exception("Could not subscribe to trade updates.");
-
+			if (response_data.find("T") == response_data.end()) throw exceptions::exception("Could not subscribe to trade and quote updates.");
+			if (response_data["T"] != "subscription") throw exceptions::exception("Could not subscribe to trade and quote updates.");
+			
 			time_t END = time(nullptr);
 
 			std::cout << "TOOK ~" << double(END - START) / 60.0 << " MINUTES TO GATHER DATA AND INITIALIZE BOT." << std::endl;
@@ -912,25 +949,19 @@ void tradingBot::start()
 
 			dictionary last_trade_update;
 
+			auto current_symbol_iterator = final_symbols.begin();
+			auto start_symbol_iterator = final_symbols.begin();
+			auto end_symbol_iterator = final_symbols.end();
+
 			//while waiting to start trading handle account and minute bar updates
-			
 			//if current time >= trading start time then start trading (go to next loop)
 			while (time(nullptr) <= trading_start_time)
 			{
-				account_ws.recv(last_msg);
+				if (account_ws.recv(last_msg)) handleTradeUpdate(last_msg, last_trade_update, final_symbols); //expecting individual json objects
+				if (data_ws.recv(last_msg)) updateParser.parseJSONArray(last_msg, final_symbols); //handle bar, trade, and quote updates, and errors
 
-				if (last_msg.size() > 2) //expecting individual json objects
-				{
-					handleTradeUpdate(last_msg, last_trade_update, final_symbols);
-				}
-
-				data_ws.recv(last_msg);
-
-				if (last_msg.size() > 2)
-				{
-					preProcessJSONArray(last_msg);
-					updateParser.parseJSONArray(last_msg, final_symbols);
-				}
+				//if the bot isn't busy handling updates then it can spend some time cleaning the quote deques
+				else cleanQuoteDeque(current_symbol_iterator, start_symbol_iterator, end_symbol_iterator);
 			}
 
 			//start trading
@@ -941,27 +972,23 @@ void tradingBot::start()
 
 			std::cout << "STARTED TRADING AT " << current_time << std::endl;
 
-			for (auto& pair : final_symbols) pair.second.trading_permitted = true;
+			current_symbol_iterator = start_symbol_iterator;
+
+			while (current_symbol_iterator < end_symbol_iterator) (current_symbol_iterator++)->trading_permitted = true;
 
 			try
 			{
 				//if current time >= trading end time then stop trading
 				while (time(nullptr) <= trading_end_time)
 				{
-					account_ws.recv(last_msg);
-
-					if (last_msg.size() > 2) //expecting individual json objects
+					if (account_ws.recv(last_msg)) //expecting individual json objects - 41% of runtime spent here
 					{
+						//std::cout << last_msg << std::endl << std::endl << std::endl;
 						handleTradeUpdate(last_msg, last_trade_update, final_symbols);
 					}
 
-					data_ws.recv(last_msg);
-
-					if (last_msg.size() > 2)
-					{
-						preProcessJSONArray(last_msg);
-						updateParser.parseJSONArray(last_msg, final_symbols);
-					}
+					if (data_ws.recv(last_msg)) updateParser.parseJSONArray(last_msg, final_symbols); //49% of runtime spent here
+					else cleanQuoteDeque(current_symbol_iterator, start_symbol_iterator, end_symbol_iterator);
 				}
 
 				//stop trading
@@ -984,11 +1011,34 @@ void tradingBot::start()
 	catch (const std::exception& exception) { throw exception; }
 }
 
+/*
+Since many of the keys in trade, quote, and bar updates are only 1 or 2 characters long,
+we can greatly speed up the parsing process by using switch statements - which require numerical
+or enumerated types - instead of if/else statements by integer-encoding the strings.
+
+This only works for small strings (integer-type values can only be so large).
+*/
+
+constexpr inline size_t encodeString(const std::string& string)
+{
+	size_t h = 0;
+
+	for (const char& c : string) { if (256 * h + c <= h && c != '\0') return 0; h = 256 * h + c; }
+
+	return h;
+}
+
 void updateDailyBar(bar& daily_bar, const std::string& key, const std::string& value)
 {
-	if (key == "t") daily_bar.t = value;
-	else if (key == "v") daily_bar.v = std::stoi(value);
-	else if (key == "c") daily_bar.c = std::stod(value);
+	//faster than if/else statements - only works when key strings are small
+
+	switch (encodeString(key))
+	{
+		case encodeString("t"): { daily_bar.t = value; break; }
+		case encodeString("c"): { daily_bar.c = convert<double>(value); break; }
+		case encodeString("v"): { daily_bar.v = convert<long long>(value); break; }
+		default: break;
+	}
 }
 
 void updateDailyData(const bar& daily_bar, dailyBarContainer& daily_bars)
@@ -1005,14 +1055,14 @@ void getAvailableSymbols(std::vector<symbol>& symbols, std::string& assets_json)
 {
 	JSONArrayParser<symbol, std::vector<symbol>, updateSymbol, updateSymbolData> symbol_data_parser;
 
-	//expecting a single-level json array
-	preProcessJSONArray(assets_json);
-
-	symbol_data_parser.parseJSONArray(assets_json, symbols);
+	symbol_data_parser.parseJSONArray(assets_json, symbols); //expecting a single-level json array
 }
 
 void updateSymbol(symbol& Symbol, const std::string& key, const std::string& value)
 {
+	//some of the strings are too large for integer encoding
+	//not a big deal since this is only used to gather data about symbols and wont affect the performance of the bot at all
+
 	if (key == "class") Symbol.type = value;
 	else if (key == "exchange") Symbol.exchange = value;
 	else if (key == "symbol") Symbol.ticker = value;
@@ -1040,9 +1090,9 @@ void updateSymbolData(const symbol& Symbol, std::vector<symbol>& symbols)
 double getBuyingPower(std::string& account_info_json)
 {
 	dictionary account_info;
+	JSONParser json_parser;
 
-	preProcessJSON(account_info_json);
-	parseJSON(account_info, account_info_json);
+	json_parser.parseJSON(account_info, account_info_json);
 
 	if (account_info.find("trading_blocked") != account_info.end())
 	{
@@ -1062,7 +1112,7 @@ double getBuyingPower(std::string& account_info_json)
 	}
 	else throw exceptions::exception("Value for account_blocked not found.");
 
-	if (account_info.find("non_marginable_buying_power") != account_info.end()) return std::stold(account_info["non_marginable_buying_power"]);
+	if (account_info.find("non_marginable_buying_power") != account_info.end()) return convert<long double>(account_info["non_marginable_buying_power"]);
 	else throw exceptions::exception("Could not obtain available cash to trade.");
 
 	return 0.0L;
@@ -1070,23 +1120,42 @@ double getBuyingPower(std::string& account_info_json)
 
 void updateTradeOrBarInfo(tradeOrBarUpdate& information, const std::string& key, const std::string& value)
 {
-	if (key == "T") information.T = value;
-	else if (key == "S") information.S = value;
-	else if (key == "s") information.s = std::stoi(value);
-	else if (key == "p") information.p = std::stod(value);
-	else if (key == "t") information.t = value;
-	else if (key == "x") information.x = value[0];
-	else if (key == "c") information.c = value;
-	else if (key == "v") information.v = std::stoi(value);
-	else if (key == "bx") information.bx = value[0];
-	else if (key == "bp") information.bp = std::stod(value);
-	else if (key == "code") information.code = std::stoi(value);
-	else if (key == "msg") information.msg = value;
+	switch (encodeString(key))
+	{
+		case encodeString("T"): { information.T = value; break; }
+		case encodeString("S"): { information.S = value; break; }
+		case encodeString("s"): { information.s = convert<int>(value); break; }
+		case encodeString("p"): { information.p = convert<double>(value); break; }
+		case encodeString("t"): { information.t = value; break; }
+		case encodeString("x"): { information.x = value[0]; break; }
+		case encodeString("c"): { information.c = value; break; }
+		case encodeString("v"): { information.v = convert<long long>(value); break; }
+		case encodeString("bx"): { information.bx = value[0]; break; }
+		case encodeString("bp"): { information.bp = convert<double>(value); break; }
+		case encodeString("ax"): { information.ax = value[0]; break; }
+		case encodeString("ap"): { information.ap = convert<double>(value); break; }
+		case encodeString("code"): { information.code = convert<int>(value); break; }
+		case encodeString("msg"): { information.msg = value; break; }
+		default: break;
+	}
 }
 
 void updateSymbolData(const tradeOrBarUpdate& update, symbolData& symbol_data)
 {
-	if (update.T == "t") //this is a trade update
+	if (update.T == "q") //this is a quote update
+	{
+		//if (update.bx == 'D') return; //exchange is the FINRA ADF
+
+		symbol& current_symbol = symbol_data[update.S];
+
+		//calculate current time in nanoseconds since midnight - convert the current hour, minute, and last whole second
+		//record ask and bid prices in order to calculate the spread - used to account for slippage
+
+		current_symbol.quote_times.push_back(convertUTC(update.t));
+		current_symbol.bid_prices.push_back(update.bp);
+		current_symbol.ask_prices.push_back(update.ap);
+	}
+	else if (update.T == "t") //this is a trade update
 	{
 		if (update.x == 'D') return; //exchange is the FINRA ADF
 		if (update.s < 100) return; //size < 100
@@ -1101,11 +1170,7 @@ void updateSymbolData(const tradeOrBarUpdate& update, symbolData& symbol_data)
 		symbol& current_symbol = symbol_data[update.S];
 
 		//calculate current time in nanoseconds since midnight - convert the current hour, minute, and last whole second
-		current_symbol.t = std::stoll(update.t.substr(11, 2)) * 3600000000000ULL + \
-			std::stoll(update.t.substr(14, 2)) * 60000000000ULL + std::stoll(update.t.substr(17, 2)) * 1000000000ULL;
-
-		//convert the remaining fraction of the last second to nanoseconds
-		if (update.t.size() > 20) current_symbol.t += static_cast<long long>(1000000000.0L * std::stold(update.t.substr(19, update.t.size() - 20)));
+		current_symbol.t = convertUTC(update.t);
 
 		current_symbol.time_stamps.push_back(current_symbol.t);
 		current_symbol.prices.push_back(update.p);
@@ -1116,7 +1181,7 @@ void updateSymbolData(const tradeOrBarUpdate& update, symbolData& symbol_data)
 		current_symbol.dt = current_symbol.t - current_symbol.time_stamps.front();
 		current_symbol.dp = update.p / current_symbol.prices.front();
 
-		while (current_symbol.dt > symbol_data.model.ranges.rolling_period)
+		while (current_symbol.dt >= symbol_data.model.ranges.rolling_period)
 		{
 			current_symbol.rolling_vsum -= current_symbol.sizes.front();
 
@@ -1128,6 +1193,38 @@ void updateSymbolData(const tradeOrBarUpdate& update, symbolData& symbol_data)
 			current_symbol.dp = update.p / current_symbol.prices.front();
 		}
 
+		/*
+		quote and trade streams have different delay times so it is possible to receive a quote before a - trade that occured before the quote
+		because of that, we need to record all incoming quotes and discard those that occured before the current trade
+
+		if the quote deques are large enough, then the bot might stall and shutdown so we iterate starting from the back (the most recent quote update)
+		in order to find the latest quote update that occured before the current trade
+		*/
+
+		auto quote_time_ptr = current_symbol.quote_times.rbegin();
+		auto quote_time_end = current_symbol.quote_times.rend();
+
+		auto bid_price_ptr = current_symbol.bid_prices.rbegin();
+		auto ask_price_ptr = current_symbol.ask_prices.rbegin();
+
+		//bid and ask prices are only appended and removed with their respective quote times so there is no need to check all three pointers
+		while (quote_time_ptr != quote_time_end)
+		{
+			if (*quote_time_ptr < current_symbol.t)
+			{
+				current_symbol.old_t = *quote_time_ptr;
+				current_symbol.last_bid = *bid_price_ptr;
+				current_symbol.last_ask = *ask_price_ptr;
+				current_symbol.has_past_quote = true;
+
+				break;
+			}
+
+			++quote_time_ptr;
+			++bid_price_ptr;
+			++ask_price_ptr;
+		}
+		
 		//see if this stock's price reached a new quantum price level
 		while (update.p <= current_symbol.getPriceLevel(-1)) current_symbol.new_n--;
 		while (update.p >= current_symbol.getPriceLevel(+1)) current_symbol.new_n++;
@@ -1141,7 +1238,7 @@ void updateSymbolData(const tradeOrBarUpdate& update, symbolData& symbol_data)
 		}
 
 		//if a new price level is reached determine what our position size should be
-		if (current_symbol.n != current_symbol.new_n)
+		if (current_symbol.n != current_symbol.new_n && current_symbol.has_past_quote)
 		{
 			/*
 			check the rest of the outlier conditions here
@@ -1151,22 +1248,32 @@ void updateSymbolData(const tradeOrBarUpdate& update, symbolData& symbol_data)
 
 			//skip checking time_of_day
 
-			current_symbol.entry_price = roundPrice(current_symbol.getPriceLevel(0));
+			/*
+			since the buy signals were generated using continuous price levels (not rounded to penny or sub-penny increments)
+			in the backtesting, we need to do the same in this bot. But the entry price must be rounded properly (as also done in
+			the backtesting)
+			*/
+
+			double current_price = current_symbol.getPriceLevel(0);
+
+			if (update.p > current_price) current_price = update.p;
+
+			current_symbol.entry_price = roundPrice(current_price);
 			current_symbol.quantity_desired = 0;
 
 			//if at least ROLLING_PERIOD_MIN_TRADES trades have occured within the last ROLLING_PERIOD
 			//current_symbol.rolling_csum = current_symbol.sizes.size();
-			if (current_symbol.sizes.size() >= symbol_data.model.ranges.rolling_period_min_trades && \
+			if (current_symbol.sizes.size() >= 10 + 0 * symbol_data.model.ranges.rolling_period_min_trades && \
 				current_symbol.sizes.size() <= symbol_data.model.ranges.rolling_period_max_trades)
 			{
-				if (current_symbol.n >= symbol_data.model.ranges.min_n && current_symbol.n <= symbol_data.model.ranges.max_n)
+				if (current_symbol.new_n >= symbol_data.model.ranges.min_n && current_symbol.new_n <= symbol_data.model.ranges.max_n)
 				{
 					if (current_symbol.vsum >= symbol_data.model.ranges.min_vsum && current_symbol.vsum <= symbol_data.model.ranges.max_vsum)
 					{
 						if (update.s >= symbol_data.model.ranges.min_size && update.s <= symbol_data.model.ranges.max_size)
 						{
 							if (current_symbol.rolling_vsum >= symbol_data.model.ranges.rolling_volume_min && \
-								current_symbol.rolling_vsum <= symbol_data.model.ranges.rolling_volume_max)
+								current_symbol.rolling_vsum <= symbol_data.model.ranges.rolling_volume_max && current_symbol.rolling_vsum * current_price >= 10000.0)
 							{
 								if (current_symbol.dp >= symbol_data.model.ranges.min_dp && current_symbol.dp <= symbol_data.model.ranges.max_dp)
 								{
@@ -1180,8 +1287,12 @@ void updateSymbolData(const tradeOrBarUpdate& update, symbolData& symbol_data)
 										{
 											//if the rest of the outlier conditions are satisfied, calculate potential gain, loss, and probability of success
 
-											double potential_gain_per_share = roundPrice(current_symbol.getPriceLevel(1)) - current_symbol.entry_price;
-											double potential_loss_per_share = current_symbol.entry_price - roundPrice(current_symbol.getPriceLevel(-1));
+											double slippage = current_symbol.last_ask - current_symbol.last_bid;
+
+											if (slippage < 0.0) slippage = 0.0;
+
+											double potential_gain_per_share = current_symbol.getPriceLevel(1) - current_price - slippage;
+											double potential_loss_per_share = current_price - current_symbol.getPriceLevel(-1) + slippage;
 
 											float time_of_day = static_cast<long double>(current_symbol.t) / 60000000000.0L; //convert nanoseconds to minute of day
 
@@ -1199,6 +1310,29 @@ void updateSymbolData(const tradeOrBarUpdate& update, symbolData& symbol_data)
 												{
 													//calculate the maximum number of shares the bot should hold
 													current_symbol.quantity_desired = static_cast<int>(symbol_data.risk_per_trade / potential_loss_per_share);
+//#ifdef TRADE_BOT_DEBUG
+													//*
+													std::cout << "XXXPRED Symbol : " << update.S << " - time_of_day : " << time_of_day << " - relative_volume : " << relative_volume;
+													std::cout << " - n : " << current_symbol.new_n << " - mean : " << current_symbol.mean << " - dp : " << current_symbol.dp;
+													std::cout << " - std : " << current_symbol.std << " - dt : " << dt << " - vsum : " << current_symbol.vsum;
+													std::cout << " - average_volume : " << current_symbol.average_volume << " - previous_days_close : " << current_symbol.previous_days_close;
+													std::cout << " - rolling_csum : " << current_symbol.sizes.size() << " - rolling_vsum : " << current_symbol.rolling_vsum;
+													std::cout << " - pm : " << current_symbol.pm << " - size : " << update.s << " - pp : " << current_symbol.pp;
+													std::cout << " - lambda : " << current_symbol.l << " - chance_of_+1_transition : " << probability_of_success;
+													std::cout << " - reward_per_share : " << potential_gain_per_share << " - risk_per_share : " << potential_loss_per_share;
+													std::cout << " - last_ask : " << current_symbol.last_ask << " - last_bid : " << current_symbol.last_bid;
+													std::cout << " - time_passed_since_last_quote[ns] : " << current_symbol.t - current_symbol.old_t << std::endl;
+//#endif
+													//*/
+
+													/*
+													std::cout << "Buy " << current_symbol.quantity_desired << " shares of " << update.S << " at " << current_symbol.entry_price << std::endl;
+													std::cout << "\tSell for a gain at " << potential_gain_per_share + current_symbol.entry_price << std::endl;
+													std::cout << "\tSell for a loss at " << current_symbol.entry_price - potential_loss_per_share << std::endl;
+													std::cout << "\tHas a " << 100.0 * probability_of_success << "% chance of succeeding." << std::endl << std::endl;
+
+													current_symbol.quantity_desired = 0;
+													*/
 												}
 											}
 										}
@@ -1216,7 +1350,36 @@ void updateSymbolData(const tradeOrBarUpdate& update, symbolData& symbol_data)
 		*/
 
 		//only place orders if trading is permitted
-		if (current_symbol.trading_permitted) current_symbol.updatePosition(symbol_data);
+		if (current_symbol.trading_permitted)
+		{
+			try { current_symbol.updatePosition(symbol_data); }
+			catch (const std::runtime_error& runtime_error) { std::cout << "RUNTIME ERROR FROM POSITION UPDATE" << std::endl; throw runtime_error; }
+			catch (const exceptions::exception& exception)
+			{
+				std::cout << "EXCEPTION FROM POSITION UPDATE" << std::endl;
+
+				if (symbol_data.response.status_code == 301)
+				{
+					std::cout << "RESPONSE FIELDS" << std::endl;
+
+					for (const auto pair : symbol_data.response.fields) { std::cout << pair.first << " : " << pair.second << std::endl; }
+
+					std::cout << std::endl;
+					std::cout << "ORDER FIELDS" << std::endl;
+
+					for (const auto pair : symbol_data.order_data) { std::cout << pair.first << " : " << pair.second << std::endl; }
+
+					std::cout << std::endl;
+					std::cout << "TICKER : " << current_symbol.ticker << std::endl;
+					std::cout << "ORDER ID : " << current_symbol.order_id << std::endl;
+					std::cout << "REPLACEMENT ORDER ID : " << current_symbol.replacement_order_id << std::endl;
+				}
+
+				throw exception;
+			}
+			catch (const SSLNoReturn& no_return) { std::cout << "SSL NO RETURN FROM POSITION UPDATE" << std::endl; throw no_return; }
+			catch (const std::exception& exception) { std::cout << "BASE EXCEPTION FROM POSITION UPDATE" << std::endl; throw exception; }
+		}
 		else current_symbol.quantity_desired = 0;
 
 		current_symbol.n = current_symbol.new_n;
@@ -1226,40 +1389,56 @@ void updateSymbolData(const tradeOrBarUpdate& update, symbolData& symbol_data)
 	{
 		throw exceptions::exception(std::string("Error : \"") + update.msg + std::string("\" occured with status code - ") + std::to_string(update.code) + std::string("."));
 	}
-	else if (update.T == "q") //this is a quote update - these are only used to close positions when an error is received
+	else if (update.T == "subscription") std::cout << "SUBSCRIPTION CONFIRMATION RECEIVED" << std::endl;
+
+#ifdef TRADE_BOT_DEBUG
+
+	else if (update.T == "c")
 	{
-		if (update.bx == 'D') return; //exchange is the FINRA ADF
-
-		symbol& current_symbol = symbol_data[update.S];
-
-		if (current_symbol.dp <= 0.0) current_symbol.dp = 1.0;
-
-		if (current_symbol.dp < 1.0) current_symbol.entry_price = update.bp * current_symbol.dp;
-		else current_symbol.entry_price = update.bp / current_symbol.dp;
-
-		if (current_symbol.entry_price <= 1.0) current_symbol.entry_price = roundPrice(current_symbol.entry_price - 0.0001);
-		else current_symbol.entry_price = roundPrice(current_symbol.entry_price - 0.01);
-
-		if (current_symbol.entry_price < current_symbol.limit_price) current_symbol.updatePosition(symbol_data);
+		std::cout << "TRADE CORRECTION FOR " << update.S << " FOUND AT " << update.t << std::endl;
 	}
+
+#endif
 }
 
 void handleTradeUpdate(std::string& last_msg, dictionary& trade_update_info, symbolData& final_symbols)
 {
 	trade_update_info.clear();
+	final_symbols.json_parser.parseJSON(trade_update_info, last_msg);
 
-	preProcessJSON(last_msg);
-	parseJSON(trade_update_info, last_msg);
+	//skip checking for stream type
 
-	//skip checking for stream type and data field
+	if (trade_update_info.find("data") == trade_update_info.end())
+	{
+		for (const auto& pair : trade_update_info) std::cout << pair.first << " : " << pair.second << std::endl;
 
-	preProcessJSON(trade_update_info["data"]);
-	parseJSON(trade_update_info, trade_update_info["data"]);
+		throw exceptions::exception("No data field received for account update.");
+	}
 
-	//skip checking for order field
+	if (trade_update_info["data"].size() <= 2)
+	{
+		for (const auto& pair : trade_update_info) std::cout << pair.first << " : " << pair.second << std::endl;
 
-	preProcessJSON(trade_update_info["order"]);
-	parseJSON(trade_update_info, trade_update_info["order"]);
+		throw exceptions::exception("Empty data field received for account update.");
+	}
+
+	final_symbols.json_parser.parseJSON(trade_update_info, trade_update_info["data"]);
+
+	if (trade_update_info.find("order") == trade_update_info.end())
+	{
+		for (const auto& pair : trade_update_info) std::cout << pair.first << " : " << pair.second << std::endl;
+
+		throw exceptions::exception("No order field received for account update.");
+	}
+
+	if (trade_update_info["order"].size() <= 2)
+	{
+		for (const auto& pair : trade_update_info) std::cout << pair.first << " : " << pair.second << std::endl;
+
+		throw exceptions::exception("Empty order field received for account update.");
+	}
+
+	final_symbols.json_parser.parseJSON(trade_update_info, trade_update_info["order"]);
 
 	trade_update_info.erase("data");
 	trade_update_info.erase("order");
@@ -1272,21 +1451,41 @@ void handleTradeUpdate(std::string& last_msg, dictionary& trade_update_info, sym
 	std::string& order_id = trade_update_info["id"];
 	std::string& event = trade_update_info["event"];
 
-	if (final_symbols.find(Symbol) == final_symbols.end()) return; //if we get an order for a symbol that this bot is not watching then ignore it
+	//having issues with rejected order updates - for debugging
+	if (event == std::string("rejected")) std::cout << "FAKE UPDATE : " << Symbol << std::endl;
+
+	if (!final_symbols.contains(Symbol)) return; //if we get an order for a symbol that this bot is not watching then ignore it
 
 	symbol& current_symbol = final_symbols[Symbol];
 
-	//when the bot is active do not sell off any position it enters, because it will ignore that update
-	if (current_symbol.order_id != order_id) return; //if this order was not sent by the bot then ignore it
+	bool rejected_replacement = false;
 
-	int quantity_filled = std::stoi(trade_update_info["filled_qty"]);
-	int quantity = std::stoi(trade_update_info["qty"]);
+	//having issues with rejected order updates - for debugging
+	if (event == std::string("rejected"))
+	{
+		std::cout << "FAKE UPDATE : " << Symbol << " " << event << " " << order_type << " " << order_side << " at N/A for N/A shares";
+		std::cout << " - remaining buying power : " << final_symbols.buying_power;
+		std::cout << " - avg fill price : N/A";
+		std::cout << " - desired qty : " << current_symbol.quantity_desired;
+		std::cout << " - pending qty : " << current_symbol.quantity_pending;
+		std::cout << " - owned qty : " << current_symbol.quantity_owned;
+		std::cout << " - update time : " << trade_update_info["updated_at"] << std::endl << std::endl;
+	}
+
+	//replacement orders don't change current_symbol.order_id, so if one of those orders is rejected, the bot will most likely ignore it without the following line of code
+	if (event == "rejected" && current_symbol.replacement_order_id == order_id) rejected_replacement = true;
+
+	//when the bot is active do not sell off any position it enters, because it will ignore that update
+	else if (current_symbol.order_id != order_id) return; //if this order was not sent by the bot then ignore it
+
+	int quantity_filled = convert<int>(trade_update_info["filled_qty"]);
+	int quantity = convert<int>(trade_update_info["qty"]);
 
 	double average_fill_price = 0.0;
 	double limit_price = 0.0;
 
-	if (trade_update_info["filled_avg_price"] != "null") average_fill_price = std::stod(trade_update_info["filled_avg_price"]);
-	if (trade_update_info["limit_price"] != "null") limit_price = std::stod(trade_update_info["limit_price"]);
+	if (trade_update_info["filled_avg_price"] != "null") average_fill_price = convert<double>(trade_update_info["filled_avg_price"]);
+	if (trade_update_info["limit_price"] != "null") limit_price = convert<double>(trade_update_info["limit_price"]);
 
 	if (event == "fill")
 	{
@@ -1308,7 +1507,11 @@ void handleTradeUpdate(std::string& last_msg, dictionary& trade_update_info, sym
 			current_symbol.quantity_owned -= quantity_filled - current_symbol.order_quantity_filled;
 		}
 
-		current_symbol.order_id.clear();
+		//if our order has a pending replacement, then we make the replacement the current order so the bot will recognize it when its status changes
+		current_symbol.order_id = current_symbol.replacement_order_id;
+		current_symbol.replacement_order_id.clear();
+
+		//current_symbol.order_id.clear();
 	}
 	else if (event == "partial_fill")
 	{
@@ -1343,7 +1546,8 @@ void handleTradeUpdate(std::string& last_msg, dictionary& trade_update_info, sym
 		}
 		else if (order_type == "limit" || order_type == "market") current_symbol.quantity_pending += quantity - quantity_filled;
 
-		if (event == "replaced") //set order_id to replacement_order_id
+		if (rejected_replacement) current_symbol.replacement_order_id.clear();
+		else if (event == "replaced") //set order_id to replacement_order_id
 		{
 			current_symbol.order_id = current_symbol.replacement_order_id;
 			current_symbol.replacement_order_id.clear();
@@ -1385,10 +1589,41 @@ void handleTradeUpdate(std::string& last_msg, dictionary& trade_update_info, sym
 	std::cout << " - owned qty : " << current_symbol.quantity_owned;
 	std::cout << " - update time : " << trade_update_info["updated_at"] << std::endl << std::endl;
 
+	current_symbol.last_update_status = event;
 	current_symbol.waiting_for_update = false;
 
-	//if the bot cancels an order because its directional bias changed, it might also need to place a new order
-	if (current_symbol.trading_permitted && event == "canceled") current_symbol.updatePosition(final_symbols);
+	//if the bot changes its directional bias, it might need to place a new order after canceling one or vice versa
+	if (current_symbol.trading_permitted && (event == "canceled" || event == "new")) current_symbol.updatePosition(final_symbols);
+}
+
+//auto type should be iterator for symbol data
+void cleanQuoteDeque(auto& current_symbol_iterator, const auto& start_symbol_iterator, const auto& end_symbol_iterator)
+{
+	if (current_symbol_iterator->quote_times.size() < 2) //go to the next symbol if no quote data needs to be removed from the quote deques of the current symbol
+	{
+		if (++current_symbol_iterator >= end_symbol_iterator) current_symbol_iterator = start_symbol_iterator;
+		return;
+	}
+
+	size_t number_of_quotes_to_be_removed = current_symbol_iterator->quote_times.size() - 1; //we know the size is at least 2 because of the if statement above
+
+	//limit the number of quotes we remove so the bot won't slow down
+	if (number_of_quotes_to_be_removed > max_allowed_quote_removals) number_of_quotes_to_be_removed = max_allowed_quote_removals;
+
+	//remove all but the most recent quote data that occurs before the most recent trade update
+	while (number_of_quotes_to_be_removed > 0 && *(current_symbol_iterator->quote_times.begin() + 1) < current_symbol_iterator->t)
+	{
+		current_symbol_iterator->quote_times.pop_front();
+		current_symbol_iterator->bid_prices.pop_front();
+		current_symbol_iterator->ask_prices.pop_front();
+
+		--number_of_quotes_to_be_removed;
+	}
+
+	if (number_of_quotes_to_be_removed > 0) //true if none - but one - quote update occured before the most recent trade
+	{
+		if (++current_symbol_iterator >= end_symbol_iterator) current_symbol_iterator = start_symbol_iterator;
+	}
 }
 
 double symbol::getPriceLevel(const int n_diff) //n_diff is difference from new_n
@@ -1406,6 +1641,93 @@ double symbol::getPriceLevel(const int n_diff) //n_diff is difference from new_n
 	return previous_days_close / E;
 }
 
+#ifdef USE_MARKET_ORDERS
+
+void symbol::updatePosition(symbolData& symbol_data)
+{
+	if (waiting_for_update) return; //don't place another order until the previous one has been received by the trade update stream
+	if (quantity_desired > quantity_owned + quantity_pending) //add more shares
+	{
+		if (quantity_pending < 0)
+		{
+			if (!canceled_order)
+			{
+				//cancel the sell order
+				symbol_data.cancelOrder(order_id);
+
+				//404 might be returned if we try to cancel an order right after it is filled (and the bot didn't get the update yet)
+				if (symbol_data.response.status_code != 204 && symbol_data.response.status_code != 404)
+				{
+					throw exceptions::exception("When canceling sell order - " + std::to_string(symbol_data.response.status_code) + " : " + symbol_data.response.status_message);
+				}
+
+				canceled_order = true;
+				waiting_for_update = true;
+			}
+		}
+		else
+		{
+			int quantity_attainable = static_cast<int>(symbol_data.buying_power / entry_price);
+			int quantity_remaining = quantity_desired - quantity_owned - quantity_pending;
+
+			if (quantity_attainable <= 0) return;
+			if (quantity_attainable < quantity_remaining) quantity_remaining = quantity_attainable;
+
+			//place a market buy order
+			symbol_data.submitOrder(ticker, quantity_remaining, "buy");
+			
+			if (symbol_data.response.status_code != 200)
+			{
+				throw exceptions::exception("When sending buy order - " + std::to_string(symbol_data.response.status_code) + " : " + symbol_data.response.status_message);
+			}
+
+			quantity_pending += quantity_remaining;
+			order_id = symbol_data.order_data["id"];
+			canceled_order = false;
+			waiting_for_update = true;
+		}
+	}
+	else if (quantity_desired < quantity_owned + quantity_pending) //liquidate some shares
+	{
+		if (quantity_pending > 0)
+		{
+			if (!canceled_order)
+			{
+				//cancel the buy order
+				symbol_data.cancelOrder(order_id);
+
+				//404 might be returned if we try to cancel an order right after it is filled (and the bot didn't get the update yet)
+				if (symbol_data.response.status_code != 204 && symbol_data.response.status_code != 404)
+				{
+					throw exceptions::exception("When canceling buy order - " + std::to_string(symbol_data.response.status_code) + " : " + symbol_data.response.status_message);
+				}
+
+				canceled_order = true;
+				waiting_for_update = true;
+			}
+		}
+		else
+		{
+			int quantity_remaining = quantity_owned + quantity_pending - quantity_desired;
+
+			//place a market sell order
+			symbol_data.submitOrder(ticker, quantity_remaining, "sell");
+
+			if (symbol_data.response.status_code != 200)
+			{
+				throw exceptions::exception("When sending sell order - " + std::to_string(symbol_data.response.status_code) + " : " + symbol_data.response.status_message);
+			}
+
+			quantity_pending -= quantity_remaining;
+			order_id = symbol_data.order_data["id"];
+			canceled_order = false;
+			waiting_for_update = true;
+		}
+	}
+}
+
+#else
+
 void symbol::updatePosition(symbolData& symbol_data)
 {
 	if (waiting_for_update) return; //don't place another order until the previous one has been received by the trade update stream
@@ -1413,6 +1735,8 @@ void symbol::updatePosition(symbolData& symbol_data)
 	{
 		if (quantity_pending > 0)
 		{
+			if (last_update_status == "pending_new") return; //cannot replace orders with this status
+
 			int quantity_attainable = static_cast<int>((symbol_data.buying_power + limit_price * order_quantity) / entry_price);
 			int quantity_remaining = quantity_desired - quantity_owned - quantity_pending + order_quantity;
 
@@ -1440,8 +1764,6 @@ void symbol::updatePosition(symbolData& symbol_data)
 						if (symbol_data.order_data["message"] == qty_le_filled_bin) return;
 					}
 				}
-
-				std::cout << "PC - RB" << quantity_remaining << " : " << order_quantity_filled << " : " << order_quantity << std::endl;
 
 				throw exceptions::exception("When replacing buy order - " + std::to_string(symbol_data.response.status_code) + " : " + symbol_data.response.status_message);
 			}
@@ -1525,6 +1847,8 @@ void symbol::updatePosition(symbolData& symbol_data)
 
 			if (quantity_remaining == order_quantity && limit_price == entry_price) return;
 
+			if (last_update_status == "pending_new") return; //cannot replace orders with this status
+
 			//replace the sell order
 			symbol_data.replaceOrder(order_id, quantity_remaining, entry_price);
 
@@ -1594,6 +1918,8 @@ void symbol::updatePosition(symbolData& symbol_data)
 
 		if (quantity_remaining == order_quantity && limit_price == entry_price) return;
 
+		if (last_update_status == "pending_new") return; //cannot replace orders with this status
+
 		symbol_data.replaceOrder(order_id, quantity_remaining, entry_price);
 
 		//possible 404 - if the order is filled or canceled when the replacement is sent
@@ -1614,8 +1940,6 @@ void symbol::updatePosition(symbolData& symbol_data)
 					if (symbol_data.order_data["message"] == qty_le_filled_bin) return;
 				}
 			}
-
-			std::cout << "PC - RO" << quantity_remaining << " : " << order_quantity_filled << " : " << order_quantity << std::endl;
 
 			if (quantity_pending < 0)
 			{
@@ -1643,11 +1967,10 @@ void symbol::updatePosition(symbolData& symbol_data)
 	}
 }
 
+#endif
+
 symbolData::symbolData(const SSLContextWrapper& SSL_context_wrapper, const MLModel& Model)
 	: ssl_context_wrapper(const_cast<SSLContextWrapper&>(SSL_context_wrapper)), model(const_cast<MLModel&>(Model)), symbolContainer() {}
-
-symbolData::symbolData(const SSLContextWrapper& SSL_context_wrapper, const MLModel& Model, size_t reserved_size)
-	: ssl_context_wrapper(const_cast<SSLContextWrapper&>(SSL_context_wrapper)), model(const_cast<MLModel&>(Model)), symbolContainer(reserved_size) {}
 
 symbolData::~symbolData() {}
 
@@ -1664,8 +1987,26 @@ void symbolData::submitOrder(const std::string& Symbol, const int& quantity, con
 
 	http::post(ssl_context_wrapper, response, base_parameters, base_headers, account_endpoint, "/v2/orders", body, timeout);
 
-	preProcessJSON(response.message);
-	parseJSON(order_data, response.message);
+	if (response.message.size() > 2) json_parser.parseJSON(order_data, response.message);
+
+	base_headers.erase("Content-Length");
+	//base_headers.erase("Content-Type");
+}
+
+void symbolData::submitOrder(const std::string& Symbol, const int& quantity, const std::string& side)
+{
+	body = "{\"symbol\":\"" + Symbol + "\", \"qty\":" + std::to_string(quantity) + ", \"side\":\"" + side \
+		+ "\", \"type\":\"market\", \"time_in_force\":\"day\"}";
+
+	base_headers["Content-Length"] = std::to_string(body.size());
+	//base_headers["Content-Type"] = "application/json";
+
+	order_data.clear();
+	response.clear();
+
+	http::post(ssl_context_wrapper, response, base_parameters, base_headers, account_endpoint, "/v2/orders", body, timeout);
+
+	if (response.message.size() > 2) json_parser.parseJSON(order_data, response.message);
 
 	base_headers.erase("Content-Length");
 	//base_headers.erase("Content-Type");
@@ -1683,8 +2024,7 @@ void symbolData::replaceOrder(const std::string& order_id, const int& quantity, 
 
 	http::patch(ssl_context_wrapper, response, base_parameters, base_headers, account_endpoint, "/v2/orders/" + order_id, body, timeout);
 
-	preProcessJSON(response.message);
-	parseJSON(order_data, response.message);
+	if (response.message.size() > 2) json_parser.parseJSON(order_data, response.message);
 
 	base_headers.erase("Content-Length");
 	//base_headers.erase("Content-Type");
@@ -1703,14 +2043,26 @@ void symbolData::cancelAllOrders()
 	order_data.clear();
 	response.clear();
 
-	base_headers["Content-Length"] = "4";
-	base_parameters["status"] = "open";
+	base_headers["Content-Length"] = "0";
 
 	http::del(ssl_context_wrapper, response, base_parameters, base_headers, account_endpoint, "/v2/orders", timeout);
 
 	base_headers.erase("Content-Length");
-	base_headers.erase("status");
 }
+
+void symbolData::closeAllPositions()
+{
+	order_data.clear();
+	response.clear();
+
+	base_headers["Content-Length"] = "0";
+
+	http::del(ssl_context_wrapper, response, base_parameters, base_headers, account_endpoint, "/v2/positions", timeout);
+
+	base_headers.erase("Content-Length");
+}
+
+#ifdef USE_MARKET_ORDERS
 
 void closeAllPositions(symbolData& final_symbols, websocket& data_ws, websocket& account_ws)
 {
@@ -1718,6 +2070,19 @@ void closeAllPositions(symbolData& final_symbols, websocket& data_ws, websocket&
 
 	//cancel existing orders and liquidate current positions
 
+	final_symbols.cancelAllOrders();
+	final_symbols.closeAllPositions();
+}
+
+#else
+
+void closeAllPositions(symbolData& final_symbols, websocket& data_ws, websocket& account_ws)
+{
+	std::cout << "CLOSING EXISTING POSITIONS" << std::endl;
+
+	//cancel existing orders and liquidate current positions
+
+	try {
 	tradeAndBarParser updateParser;
 	dictionary last_trade_update;
 
@@ -1726,7 +2091,6 @@ void closeAllPositions(symbolData& final_symbols, websocket& data_ws, websocket&
 
 	time_t early_stop_time = time(nullptr);
 
-	std::string quote_sub_msg = "{\"action\": \"subscribe\", \"quotes\": [";
 	std::string last_msg;
 
 	for (auto& pair : final_symbols)
@@ -1736,19 +2100,7 @@ void closeAllPositions(symbolData& final_symbols, websocket& data_ws, websocket&
 
 		total_shares_owned += pair.second.quantity_owned;
 		total_shares_pending += pair.second.quantity_pending;
-
-		if (pair.second.quantity_owned || pair.second.quantity_pending) quote_sub_msg += "\"" + pair.first + "\",";
 	}
-
-	quote_sub_msg.pop_back(); //remove the trailing comma (",")
-	quote_sub_msg += "]}";
-
-	//send the quote subscription message and wait for the resulting subscription confirmation
-
-	data_ws.send(quote_sub_msg, WS_TEXT_FRAME);
-
-	do data_ws.recv(last_msg); //ADD TIMEOUT MECH
-	while (!last_msg.size());
 
 	while (total_shares_owned > 0 || total_shares_pending != 0)
 	{
@@ -1766,11 +2118,7 @@ void closeAllPositions(symbolData& final_symbols, websocket& data_ws, websocket&
 
 			data_ws.recv(last_msg);
 
-			if (last_msg.size() > 2)
-			{
-				preProcessJSONArray(last_msg);
-				updateParser.parseJSONArray(last_msg, final_symbols);
-			}
+			if (last_msg.size() > 2) updateParser.parseJSONArray(last_msg, final_symbols);
 		}
 
 		total_shares_owned = 0;
@@ -1781,5 +2129,33 @@ void closeAllPositions(symbolData& final_symbols, websocket& data_ws, websocket&
 			total_shares_owned += pair.second.quantity_owned;
 			total_shares_pending += pair.second.quantity_pending;
 		}
+	}}
+	catch (const std::runtime_error& runtime_error) { std::cout << "RUNTIME ERROR WHEN CLOSING ALL POSITIONS" << std::endl; throw runtime_error; }
+	catch (const exceptions::exception& exception)
+	{
+		std::cout << "EXCEPTION WHEN CLOSING ALL POSITIONS" << std::endl;
+
+		if (final_symbols.response.status_code == 301)
+		{
+			std::cout << "RESPONSE FIELDS" << std::endl;
+
+			for (const auto pair : final_symbols.response.fields) { std::cout << pair.first << " : " << pair.second << std::endl; }
+
+			std::cout << std::endl;
+			std::cout << "ORDER FIELDS" << std::endl;
+
+			for (const auto pair : final_symbols.order_data) { std::cout << pair.first << " : " << pair.second << std::endl; }
+
+			std::cout << std::endl;
+			//std::cout << "TICKER : " << current_symbol.ticker << std::endl;
+			//std::cout << "ORDER ID : " << current_symbol.order_id << std::endl;
+			//std::cout << "REPLACEMENT ORDER ID : " << current_symbol.replacement_order_id << std::endl;
+		}
+
+		throw exception;
 	}
+	catch (const SSLNoReturn& no_return) { std::cout << "SSL NO RETURN WHEN CLOSING ALL POSITIONS" << std::endl; throw no_return; }
+	catch (const std::exception& exception) { std::cout << "BASE EXCEPTION WHEN CLOSING ALL POSITIONS" << std::endl; throw exception; }
 }
+
+#endif

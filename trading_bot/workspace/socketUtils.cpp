@@ -253,10 +253,12 @@ int SSLSocket::read(void* buffer, const int buffer_size)
 int SSLSocket::write(const std::string& message)
 {
 	bytes_write = SSL_write(ssl_struct, message.c_str(), message.size());
-	
+
 	if (bytes_write > 0) return bytes_write;
 
 	error_write = SSL_get_error(ssl_struct, bytes_write);
+
+	//keep calling SSLSocket::write while receiving SSL_ERROR_WANT_WRITE
 
 	if (error_write == SSL_ERROR_ZERO_RETURN) throw SSLNoReturn();
 	if (error_write != SSL_ERROR_WANT_WRITE)

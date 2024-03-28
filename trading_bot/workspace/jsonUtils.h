@@ -4,8 +4,6 @@
 #ifndef JSON_UTILS_H
 #define JSON_UTILS_H
 
-#include "exceptUtils.h"
-
 #include <string>
 #include <stdexcept>
 
@@ -18,16 +16,25 @@ typedef std::unordered_map<std::string, std::string> dictionary;
 
 #endif
 
-void preProcessJSON(std::string&);
-void preProcessJSONArray(std::string&);
+#define IS_NULL_CHAR(chr) if (chr == '\0') throw std::runtime_error("Invalid JSON Format.");
 
 /*
-parses one layer of a json object - assumes json string doesn't have the outer curly brackets
-example : {"key0":value0, "key1":value1} should be "key0":value0, "key1":value1
+a class for parsing one layer of a json object
 does not check for valid data types, it just parses based on token values
 */
 
-void parseJSON(dictionary&, const std::string&);
+class JSONParser
+{
+private:
+	std::string key;
+	std::string value;
+
+public:
+	JSONParser() {}
+	~JSONParser() {}
+
+	void parseJSON(dictionary&, const std::string&);
+};
 
 /*
 a class for parsing json arrays
@@ -58,86 +65,126 @@ public:
 	//return a read-only reference to the information container
 	inline const container& get_info() const noexcept { return information; }
 
-	//assumes no square brackets contain the array objects and the last object has a comma at the end
-	//example : [{"a":"b", "c":4}, {"a":"d", "c":6}] should be {"a":"b", "c":4}, {"a":"d", "c":6},
 	void parseJSONArray(const std::string& json, updateObject& update_object)
 	{
-		key.clear();
-		value.clear();
+		const char* c = json.c_str();
+		const char* start = c;
 
-		bool on_key = true; //true if we are evaluating a key
+		unsigned short int level = 0;
 
-		short int under_array = 0; //should be 0 by the time parsing is done
-		short int under_object = 0; //should be 0 by the time parsing is done
-		short int under_quote = 0; //should be 0 by the time parsing is done
-
-		for (const char& c : json)
+		while (true)
 		{
-			if (under_object)
+			while (*c != '{' && *c != '\0') c++; //find the beginning of the next json object in the array
+
+			if (*c == '\0') return;
+
+			while (true)
 			{
-				if (under_quote)
-				{
-					if (c == '"') under_quote--;
-					else if (on_key) key += c;
-					else value += c;
-				}
-				else if (under_array)
-				{
-					if (c == ']') under_array--;
-					else if (c == '[') under_array++;
+				//we know c is '{' (before the increment) based on the logic statements above
+				while (*(++c) != '"') { IS_NULL_CHAR(*c); } //find the beginning of the next key in the json object
 
-					value += c;
-				}
-				else if (under_object > 1)
+				IS_NULL_CHAR(*c);
+
+				start = ++c;
+
+				while (*c != '"') { IS_NULL_CHAR(*c); c++; } //find the end of the current key
+
+				IS_NULL_CHAR(*c);
+
+				key.assign(start, c - start); //much more efficient than key += c;
+
+				//we know c is '"' (before the increment) based on the logic statement above
+				while (*(++c) != ':') { IS_NULL_CHAR(*c); } //find the separator between the key and value pair
+				while (*(++c) == ' ') { IS_NULL_CHAR(*c); } //ignore any spaces between the value and separator
+
+				IS_NULL_CHAR(*c);
+
+				if (*c == '"') //value is a string
 				{
-					if (c == '}') under_object--;
-					else if (c == '{') under_object++;
+					start = ++c;
 
-					value += c;
+					IS_NULL_CHAR(*c);
+
+					while (*c != '"') { IS_NULL_CHAR(*c); c++; }
 				}
-				else if (c == '}') under_object--;
-				else if (c == '{')
+				else if (*c == '[') //value is a sub array
 				{
-					under_object++;
+					start = ++c;
+					level = 1; //keep track of nested arrays
 
-					value += c;
+					IS_NULL_CHAR(*c);
+
+					while (true)
+					{
+						while (*c != '"') //while we are not reading a substring
+						{
+							if (*c == '[') level++;
+							else if (*c == ']')
+							{
+								level--;
+
+								if (level == 0) break;
+							}
+
+							IS_NULL_CHAR(*(++c));
+						}
+
+						if (level == 0) break;
+
+						while (*(++c) != '"') IS_NULL_CHAR(*c); //ignore nested arrays while reading a substring
+
+						c++;
+					}
 				}
-				else if (c == '[')
+				else if (*c == '{') //value is a nested json object
 				{
-					under_array++;
+					start = ++c;
+					level = 1; //keep track of nested arrays
 
-					value += c;
+					IS_NULL_CHAR(*c);
+
+					while (true)
+					{
+						while (*c != '"') //while we are not reading a substring
+						{
+							if (*c == '{') level++;
+							else if (*c == '}')
+							{
+								level--;
+
+								if (level == 0) break;
+							}
+
+							IS_NULL_CHAR(*(++c));
+						}
+
+						if (level == 0) break;
+
+						while (*(++c) != '"') IS_NULL_CHAR(*c); //ignore nested arrays while reading a substring
+
+						c++;
+					}
 				}
-				else if (c == '"') under_quote++;
-				else if (c == ':') on_key = false;
-				else if (c == ',')
+				else //value is a number, boolean, or null
 				{
-					containerUpdateFunc(information, key, value);
+					start = c;
 
-					key.clear();
-					value.clear();
+					while (*c != ',' && *c != '}' && *c != ' ') { IS_NULL_CHAR(*c); c++; } //key : value pairs should be separated by commas
 
-					on_key = true;
+					if (start == c) throw std::runtime_error("JSON Key is missing a value.");
 				}
-				else if (c == ' ') continue;
-				else if (on_key) key += c;
-				else value += c;
-			}
-			else if (c == '{') under_object++;
-			else if (c == ',')
-			{
+
+				value.assign(start, c - start); //much more efficient than value += c;
+
+				while (*c != ',' && *c != '}') { IS_NULL_CHAR(*c); c++; } //key : value pairs should be separated by commas
+
 				containerUpdateFunc(information, key, value);
 
-				key.clear();
-				value.clear();
-
-				on_key = true;
-
-				updateFunc(information, update_object);
+				if (*c == '}') break; //start parsing the next json object in the array
 			}
-		}
 
-		if (under_array || under_object || under_quote || !on_key) throw std::runtime_error("Invalid JSON format.");
+			updateFunc(information, update_object);
+		}
 	}
 };
 

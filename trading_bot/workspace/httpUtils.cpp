@@ -20,19 +20,19 @@ void http::constructRequest(const dictionary& parameters, const dictionary& head
 	//add parameters
 	if (!parameters.empty())
 	{
-		request += "?";
+		request.append("?"); //request += "?";
 
-		for (const auto& pair : parameters) request += pair.first + "=" + pair.second + "&";
+		for (const auto& pair : parameters) request.append(pair.first + "=" + pair.second + "&"); //request += pair.first + "=" + pair.second + "&";
 
 		request.pop_back(); //remove the trailing & or ? character
 	}
 
-	request += " HTTP/1.1\r\n";
+	request.append(" HTTP/1.1\r\n"); //request += " HTTP/1.1\r\n";
 
 	//add headers
-	if (!headers.empty()) for (const auto& pair : headers) request += pair.first + ": " + pair.second + "\r\n";
+	if (!headers.empty()) for (const auto& pair : headers) request.append(pair.first + ": " + pair.second + "\r\n"); //request += pair.first + ": " + pair.second + "\r\n";
 
-	request += "Host: " + host + "\r\n\r\n";
+	request.append("Host: " + host + "\r\n\r\n"); //request += "Host: " + host + "\r\n\r\n";
 }
 
 void http::parseResponseHeader(SSLSocket& ssl_socket, time_t timeout, httpResponse& response)
@@ -261,178 +261,201 @@ void http::httpClient::del(const dictionary& parameters, const dictionary& heade
 
 status http::httpClient::recvResponse(httpResponse& response)
 {
-	if (current_status == status::SEND_REQUEST)
+	switch (current_status)
 	{
-		bytes = ssl_socket.write(request);
-
-		if (bytes >= request.size()) current_status = status::RECEIVE_HEADER;
-		else current_status = status::SENDING_REQUEST;
-	}
-	else if (current_status == status::SENDING_REQUEST)
-	{
-		bytes += ssl_socket.write(request.substr(bytes));
-
-		if (bytes >= request.size()) current_status = status::RECEIVE_HEADER;
-	}
-	else if (current_status == status::RECEIVE_HEADER)
-	{
-		response.clear();
-
-		sec_since_epoch = time(nullptr);
-		index = 0;
-
-		segment = "Status Code Info: ";
-
-		current_status = status::RECEIVING_HEADER;
-	}
-	else if (current_status == status::RECEIVING_HEADER)
-	{
-		if (time(nullptr) - sec_since_epoch >= timeout) current_status = status::TIMED_OUT;
-		
-		bytes = ssl_socket.read(buffer, HTTP_UTILS_BUFFER_SIZE);
-
-		if (bytes)
+		case status::SEND_REQUEST:
 		{
-			segment += std::string(&buffer[0], bytes);
-			index = segment.find("\r\n\r\n");
+			bytes = ssl_socket.write(request);
+
+			if (bytes >= request.size()) current_status = status::RECEIVE_HEADER;
+			else current_status = status::SENDING_REQUEST;
+
+			break;
+		}
+		case status::SENDING_REQUEST:
+		{
+			bytes += ssl_socket.write(request.substr(bytes));
+
+			if (bytes >= request.size()) current_status = status::RECEIVE_HEADER;
+
+			break;
+		}
+		case status::RECEIVE_HEADER:
+		{
+			response.clear();
+
+			sec_since_epoch = time(nullptr);
+			index = 0;
+
+			segment = "Status Code Info: ";
+
+			current_status = status::RECEIVING_HEADER;
+
+			break;
+		}
+		case status::RECEIVING_HEADER:
+		{
+			if (time(nullptr) - sec_since_epoch >= timeout) current_status = status::TIMED_OUT;
+
+			bytes = ssl_socket.read(buffer, HTTP_UTILS_BUFFER_SIZE);
+
+			if (bytes)
+			{
+				segment.append(&buffer[0], bytes); //segment += std::string(&buffer[0], bytes);
+				index = segment.find("\r\n\r\n");
+
+				if (index != std::string::npos)
+				{
+					response.message = segment.substr(index + 4);
+					segment = segment.substr(0, index);
+					index = segment.find("\r\n");
+
+					while (index != std::string::npos)
+					{
+						field = segment.substr(0, index);
+						segment = segment.substr(index + 2);
+						index = field.find(": ");
+
+						response.fields[field.substr(0, index)] = field.substr(index + 2);
+
+						index = segment.find("\r\n");
+					}
+
+					segment = response.fields["Status Code Info"].substr(9);
+					index = segment.find(" ");
+
+					response.status_code = std::stoi(segment.substr(0, index));
+					response.status_message = segment.substr(index + 1);
+
+					response.fields.erase("Status Code Info");
+
+					if (response.fields.find("Transfer-Encoding") != response.fields.end()) current_status = status::RECEIVE_CHUNKED_BODY;
+					else if (response.fields.find("Content-Length") != response.fields.end()) current_status = status::RECEIVE_BODY;
+					else if (response.status_code == 204) current_status = status::RECEIVED_RESPONSE;
+
+					/*
+					Every response from a well - behaved http server MUST include either a "Transfer-Encoding" or "Content-Length" header ...
+					... unless the status code from the response is 204 - which indicates a successful delete request.
+					*/
+
+					else throw exceptions::exception("Http response body is missing required header.");
+				}
+
+				sec_since_epoch = time(nullptr);
+			}
+
+			break;
+		}
+		case status::RECEIVE_CHUNKED_BODY:
+		{
+			sec_since_epoch = time(nullptr);
+
+			last_segment = "";
+			segment = response.message;
+
+			response.message.clear(); //write the final response here
+
+			current_status = status::RECEIVING_CHUNK_SIZE;
+
+			break;
+		}
+		case status::RECEIVING_CHUNK_SIZE: //receive chunk sizes
+		{
+			if (time(nullptr) - sec_since_epoch >= timeout) current_status = status::TIMED_OUT;
+
+			full_segment = last_segment + segment;
+			index = full_segment.find("\r\n");
 
 			if (index != std::string::npos)
 			{
-				response.message = segment.substr(index + 4);
-				segment = segment.substr(0, index);
-				index = segment.find("\r\n");
-
-				while (index != std::string::npos)
+				if (full_segment.substr(0, index) == "0") current_status = status::RECEIVED_RESPONSE; //a chunk size of 0 indicates the end of the message
+				else
 				{
-					field = segment.substr(0, index);
-					segment = segment.substr(index + 2);
-					index = field.find(": ");
+					//do something with the chunk sizes here if needed
+					segment = full_segment.substr(index + 2);
+					last_segment.clear();
 
-					response.fields[field.substr(0, index)] = field.substr(index + 2);
-
-					index = segment.find("\r\n");
+					current_status = status::RECEIVING_CHUNK;
 				}
-
-				segment = response.fields["Status Code Info"].substr(9);
-				index = segment.find(" ");
-
-				response.status_code = std::stoi(segment.substr(0, index));
-				response.status_message = segment.substr(index + 1);
-
-				response.fields.erase("Status Code Info");
-
-				if (response.fields.find("Transfer-Encoding") != response.fields.end()) current_status = status::RECEIVE_CHUNKED_BODY;
-				else if (response.fields.find("Content-Length") != response.fields.end()) current_status = status::RECEIVE_BODY;
-				else if (response.status_code == 204) current_status = status::RECEIVED_RESPONSE;
-
-				/*
-				Every response from a well - behaved http server MUST include either a "Transfer-Encoding" or "Content-Length" header ...
-				... unless the status code from the response is 204 - which indicates a successful delete request.
-				*/
-
-				else throw exceptions::exception("Http response body is missing required header.");
 			}
-
-			sec_since_epoch = time(nullptr);
-		}
-	}
-	else if (current_status == status::RECEIVE_CHUNKED_BODY)
-	{
-		sec_since_epoch = time(nullptr);
-
-		last_segment = "";
-		segment = response.message;
-
-		response.message.clear(); //write the final response here
-
-		current_status = status::RECEIVING_CHUNK_SIZE;
-	}
-	else if (current_status == status::RECEIVING_CHUNK_SIZE) //receive chunk sizes
-	{
-		if (time(nullptr) - sec_since_epoch >= timeout) current_status = status::TIMED_OUT;
-
-		full_segment = last_segment + segment;
-		index = full_segment.find("\r\n");
-
-		if (index != std::string::npos)
-		{
-			if (full_segment.substr(0, index) == "0") current_status = status::RECEIVED_RESPONSE; //a chunk size of 0 indicates the end of the message
 			else
 			{
-				//do something with the chunk sizes here if needed
+				bytes = ssl_socket.read(buffer, HTTP_UTILS_BUFFER_SIZE);
+
+				if (bytes)
+				{
+					//can log chunk sizes if needed - std::string chunk_size = last_segment;
+
+					last_segment = segment;
+					segment.assign(&buffer[0], bytes); //segment = std::string(&buffer[0], bytes);
+					sec_since_epoch = time(nullptr);
+				}
+			}
+
+			break;
+		}
+		case status::RECEIVING_CHUNK: //receive chunks
+		{
+			if (time(nullptr) - sec_since_epoch >= timeout) current_status = status::TIMED_OUT;
+
+			full_segment = last_segment + segment;
+			index = full_segment.find("\r\n");
+
+			if (index != std::string::npos)
+			{
+				response.message.append(full_segment.substr(0, index)); //response.message += full_segment.substr(0, index);
 				segment = full_segment.substr(index + 2);
 				last_segment.clear();
 
-				current_status = status::RECEIVING_CHUNK;
+				current_status = status::RECEIVING_CHUNK_SIZE;
 			}
-		}
-		else
-		{
-			bytes = ssl_socket.read(buffer, HTTP_UTILS_BUFFER_SIZE);
-
-			if (bytes)
+			else
 			{
-				//can log chunk sizes if needed - std::string chunk_size = last_segment;
+				bytes = ssl_socket.read(buffer, HTTP_UTILS_BUFFER_SIZE);
 
-				last_segment = segment;
-				segment = std::string(&buffer[0], bytes);
-				sec_since_epoch = time(nullptr);
+				if (bytes)
+				{
+					response.message.append(last_segment); //response.message += last_segment;
+
+					last_segment = segment;
+					segment.assign(&buffer[0], bytes); //segment = std::string(&buffer[0], bytes);
+					sec_since_epoch = time(nullptr);
+				}
 			}
+
+			break;
 		}
-	}
-	else if (current_status == status::RECEIVING_CHUNK) //receive chunks
-	{
-		if (time(nullptr) - sec_since_epoch >= timeout) current_status = status::TIMED_OUT;
-
-		full_segment = last_segment + segment;
-		index = full_segment.find("\r\n");
-
-		if (index != std::string::npos)
+		case status::RECEIVE_BODY:
 		{
-			response.message += full_segment.substr(0, index);
-			segment = full_segment.substr(index + 2);
-			last_segment.clear();
-
-			current_status = status::RECEIVING_CHUNK_SIZE;
-		}
-		else
-		{
-			bytes = ssl_socket.read(buffer, HTTP_UTILS_BUFFER_SIZE);
-
-			if (bytes)
-			{
-				response.message += last_segment;
-
-				last_segment = segment;
-				segment = std::string(&buffer[0], bytes);
-				sec_since_epoch = time(nullptr);
-			}
-		}
-	}
-	else if (current_status == status::RECEIVE_BODY)
-	{
-		max_message_length = std::stoll(response.fields["Content-Length"]);
-		sec_since_epoch = time(nullptr);
-
-		if (response.message.size() >= max_message_length) current_status = status::RECEIVED_RESPONSE;
-		else current_status = status::RECEIVING_BODY;
-	}
-	else if (current_status == status::RECEIVING_BODY)
-	{
-		if (time(nullptr) - sec_since_epoch >= timeout) current_status = status::TIMED_OUT;
-
-		bytes = ssl_socket.read(buffer, HTTP_UTILS_BUFFER_SIZE);
-
-		if (bytes)
-		{
-			response.message += std::string(&buffer[0], bytes);
+			max_message_length = std::stoll(response.fields["Content-Length"]);
+			sec_since_epoch = time(nullptr);
 
 			if (response.message.size() >= max_message_length) current_status = status::RECEIVED_RESPONSE;
+			else current_status = status::RECEIVING_BODY;
 
-			sec_since_epoch = time(nullptr);
+			break;
 		}
+		case status::RECEIVING_BODY:
+		{
+			if (time(nullptr) - sec_since_epoch >= timeout) current_status = status::TIMED_OUT;
+
+			bytes = ssl_socket.read(buffer, HTTP_UTILS_BUFFER_SIZE);
+
+			if (bytes)
+			{
+				response.message.append(&buffer[0], bytes); //response.message += std::string(&buffer[0], bytes);
+
+				if (response.message.size() >= max_message_length) current_status = status::RECEIVED_RESPONSE;
+
+				sec_since_epoch = time(nullptr);
+			}
+
+			break;
+		}
+		case status::RECEIVED_RESPONSE: break;
+		case status::TIMED_OUT: break;
+		default: throw std::runtime_error("Unknown http get status.");
 	}
-	else if (current_status != status::RECEIVED_RESPONSE && current_status != status::TIMED_OUT) throw std::runtime_error("Unknown http get status.");
 
 	return current_status;
 }

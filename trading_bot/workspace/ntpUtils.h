@@ -27,6 +27,7 @@ public:
 	time_t getSecondsSinceEpoch(int, int, int, int); //get the seconds since the epoch for a specified time of day (days_foward, hour, minute, second)
 
 	time_t sec_since_epoch_trunc_day; //seconds since the epoch truncated to midnight of today
+	bool is_daylight_savings; //true if daylight savings is in effect
 	int iso_weekday; //integer representing the weekday - sunday == 0, saturday == 6, etc...
 
 	char date[11];

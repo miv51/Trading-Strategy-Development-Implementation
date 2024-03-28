@@ -1,90 +1,114 @@
 
 #include "jsonUtils.h"
 
-void preProcessJSON(std::string& json)
+void JSONParser::parseJSON(dictionary& pairs, const std::string& json)
 {
-    size_t str_length = json.size();
+	const char* c = json.c_str();
+	const char* start = c;
 
-    if (str_length <= 2) throw exceptions::exception("Cannot parse empty json."); //{}
-    if (json[0] != '{' || json[str_length - 1] != '}') throw exceptions::exception("Received an unexpected json format.");
-    
-    json.erase(0, 1);
-    json.pop_back();
-    json += ',';
-}
+	unsigned short int level = 0;
 
-void preProcessJSONArray(std::string& json_array)
-{
-    size_t str_length = json_array.size();
+	while (true)
+	{
+		while (*(c) != '"') { IS_NULL_CHAR(*c); c++; } //find the beginning of the next key in the json object
 
-    if (str_length <= 2) throw exceptions::exception("Cannot parse empty json array."); //[]
-    if (json_array[0] != '[' || json_array[str_length - 1] != ']') throw exceptions::exception("Received an unexpected json array format.");
+		IS_NULL_CHAR(*c);
 
-    json_array.erase(0, 1);
-    json_array.pop_back();
-    json_array += ',';
-}
+		start = ++c;
 
-void parseJSON(dictionary& pairs, const std::string& json)
-{
-    std::string key;
-    std::string value;
+		while (*c != '"') { IS_NULL_CHAR(*c); c++; } //find the end of the current key
 
-    bool on_key = true; //true if we are evaluating a key
+		IS_NULL_CHAR(*c);
 
-    short int under_array = 0; //should be 0 by the time parsing is done
-    short int under_object = 0; //should be 0 by the time parsing is done
-    short int under_quote = 0; //should be 0 by the time parsing is done
+		key.assign(start, c - start); //much more efficient than key += c;
 
-    for (const char& c : json)
-    {
-        if (under_quote)
-        {
-            if (c == '"') under_quote--;
-            else if (on_key) key += c;
-            else value += c;
-        }
-        else if (under_array)
-        {
-            if (c == ']') under_array--;
-            else if (c == '[') under_array++;
+		//we know c is '"' (before the increment) based on the logic statement above
+		while (*(++c) != ':') { IS_NULL_CHAR(*c); } //find the separator between the key and value pair
+		while (*(++c) == ' ') { IS_NULL_CHAR(*c); } //ignore any spaces between the value and separator
 
-            value += c;
-        }
-        else if (under_object)
-        {
-            if (c == '}') under_object--;
-            else if (c == '{') under_object++;
+		IS_NULL_CHAR(*c);
 
-            value += c;
-        }
-        else if (c == '{')
-        {
-            under_object++;
+		if (*c == '"') //value is a string
+		{
+			start = ++c;
 
-            value += c;
-        }
-        else if (c == '[')
-        {
-            under_array++;
+			IS_NULL_CHAR(*c);
 
-            value += c;
-        }
-        else if (c == '"') under_quote++;
-        else if (c == ':') on_key = false;
-        else if (c == ',')
-        {
-            pairs[key] = value;
+			while (*c != '"') { IS_NULL_CHAR(*c); c++; }
+		}
+		else if (*c == '[') //value is a sub array
+		{
+			start = ++c;
+			level = 1; //keep track of nested arrays
 
-            key.clear();
-            value.clear();
+			IS_NULL_CHAR(*c);
 
-            on_key = true;
-        }
-        else if (c == ' ') continue;
-        else if (on_key) key += c;
-        else value += c;
-    }
+			while (true)
+			{
+				while (*c != '"') //while we are not reading a substring
+				{
+					if (*c == '[') level++;
+					else if (*c == ']')
+					{
+						level--;
 
-    if (under_array || under_object || under_quote || !on_key) throw std::runtime_error("Invalid JSON format.");
+						if (level == 0) break;
+					}
+
+					IS_NULL_CHAR(*(++c));
+				}
+
+				if (level == 0) break;
+
+				while (*(++c) != '"') { IS_NULL_CHAR(*c); } //ignore nested arrays while reading a substring
+
+				c++;
+			}
+		}
+		else if (*c == '{') //value is a nested json object
+		{
+			start = ++c;
+			level = 1; //keep track of nested arrays
+
+			IS_NULL_CHAR(*c);
+
+			while (true)
+			{
+				while (*c != '"') //while we are not reading a substring
+				{
+					if (*c == '{') level++;
+					else if (*c == '}')
+					{
+						level--;
+
+						if (level == 0) break;
+					}
+
+					IS_NULL_CHAR(*(++c));
+				}
+
+				if (level == 0) break;
+
+				while (*(++c) != '"') { IS_NULL_CHAR(*c); } //ignore nested arrays while reading a substring
+
+				c++;
+			}
+		}
+		else //value is a number, boolean, or null
+		{
+			start = c;
+
+			while (*c != ',' && *c != '}' && *c != ' ' && *c != '\0') c++; //key : value pairs should be separated by commas
+
+			if (start == c) throw std::runtime_error("JSON Key is missing a value.");
+		}
+
+		value.assign(start, c - start); //much more efficient than value += c;
+
+		while (*c != ',' && *c != '\0') c++; //key : value pairs should be separated by commas
+
+		pairs[key] = value;
+
+		if (*c == '\0') return;
+	}
 }

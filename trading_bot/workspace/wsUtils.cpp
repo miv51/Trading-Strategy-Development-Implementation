@@ -6,8 +6,13 @@ constexpr char constructBaseFrame(const uint8_t fin, const uint8_t rsv1, const u
 	return static_cast<char>(fin << 7 | rsv1 << 6 | rsv2 << 5 | rsv3 << 4 | opcode);
 }
 
-websocket::websocket(const SSLContextWrapper& ssl_context_wrapper, const std::string Host, const bool blocking, const time_t Timeout)
-	: SSLSocket(ssl_context_wrapper, Host, blocking), opened(false), timeout(Timeout)
+constexpr char constructBaseFrame(const uint8_t fin, const uint8_t opcode)
+{
+	return static_cast<char>(fin << 7 | opcode);
+}
+
+websocket::websocket(const SSLContextWrapper& ssl_context_wrapper, const std::string Host, const bool blocking, const bool Signal_on_control, const time_t Timeout)
+	: SSLSocket(ssl_context_wrapper, Host, blocking), opened(false), signal_on_control(Signal_on_control), timeout(Timeout)
 {
 	frame_header = 0;
 	mask_and_length = 0;
@@ -39,6 +44,7 @@ int websocket::send(const std::string& message, const char header)
 	//int mask = 1 //all outgoing messages will be masked
 
 	size_t length = message.size();
+	size_t delivered = 0;
 
 	if (length < 0x7e) new_message += char(WS_SMALL_MESSAGE_MASK_BYTE | length); //mask << 7 = 128
 	else if (length < 0x10000)
@@ -63,20 +69,30 @@ int websocket::send(const std::string& message, const char header)
 
 	for (size_t i = 0; i < length; ++i) new_message += static_cast<char>(message[i] ^ mask_key[i % 4]);
 
-	return write(new_message);
+	length = new_message.size();
+	sec_since_epoch = time(nullptr);
+
+	while (delivered < length)
+	{
+		delivered += write(new_message.substr(delivered, length - delivered));
+
+		if (time(nullptr) - sec_since_epoch >= timeout) throw exceptions::exception("Timed out while sending a websocket message.");
+	}
+
+	return length;
 }
 
-void websocket::recv(std::string& message)
+bool websocket::recv(std::string& message)
 {
 	message.clear();
 
-	//NOTE - For fragmented messages FIN = 1 only on the last frame and opcode =  0x0 on all but the first frame.
+	//NOTE - For fragmented messages FIN = 1 only on the last frame and opcode = 0x0 on all but the first frame.
 	//NOTE - Clients and servers MUST support receiving both fragmented and unfragmented messages (which I currently do not).
 	//NOTE - messages split into multiple frames can only be interrupted by control frames (ping, pong, and close)
 
 	bytes_recv = read(&frame_header, 1);
 
-	if (bytes_recv == 0) return;
+	if (bytes_recv == 0) return false;
 	else if (frame_header != WS_TEXT_FRAME && frame_header != WS_BINARY_FRAME && frame_header != WS_PING_FRAME)
 	{
 		throw std::runtime_error(("Incoming websocket message has an unexpected frame header: <" + std::string(&frame_header, 1) + ">").c_str());
@@ -167,7 +183,11 @@ void websocket::recv(std::string& message)
 		if (!send(message, WS_PONG_FRAME)) throw std::runtime_error("Failed to send pong message.");
 
 		message.clear();
+
+		return signal_on_control;
 	}
+
+	return true;
 }
 
 void websocket::open(const dictionary& headers, const char* path, http::httpResponse& response)

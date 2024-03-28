@@ -12,6 +12,8 @@
 #include "httpUtils.h"
 #include "socketUtils.h"
 #include "exceptUtils.h"
+#include "sumapUtils.h"
+#include "ioUtils.h"
 
 #include <iostream>
 #include <stdexcept>
@@ -25,10 +27,16 @@
 #include <deque>
 
 //#define TRADE_BOT_DEBUG
+#define USE_MARKET_ORDERS //can result in negative buying power (very unlikely but still possible)
 #define K0(n) ((1.1924 + 33.2383 * n + 56.2169 * n * n) / (1.0 + 43.6196 * n)) //cubic root is not necessary
 
+//this bot can use up to 64 non-blocking clients  to gather data before it starts trading (it can use more but improvement in speed quickly diminishes)
+//however it runs the risk of exceeding Alpaca's API rate limit for the unlimited plan (10000 per minute for unlimited accounts and 200 per minute otherwise)
+//if that happens the bot will shut down gracefully - for that reason, I would suggest sticking with at most 20 clients
+
 const int past_days = 2000; //number of days we look back to gather data (includes non-trading days)
-const int max_clients = 16; //maximum number of http clients used to gather data asynchronously
+const int max_clients = 20; //maximum number of http clients used to gather data asynchronously
+const int max_allowed_quote_removals = 20; //maximum allowed quotes that can be removed from quote deques per trade or quote update - this prevents the bot from stalling
 
 //errors we can safely ignore when submitting certain orders
 const std::string order_not_open = "order is not open";
@@ -39,12 +47,13 @@ struct bar;
 struct symbol;
 struct tradeOrBarUpdate;
 
-typedef std::unordered_map<std::string, symbol> symbolContainer;
+typedef staticUnorderedMap<std::string, symbol, 10000, 10000> symbolContainer;
 typedef array<bar, past_days> dailyBarContainer;
 
 class symbolData;
 
 void handleTradeUpdate(std::string&, dictionary&, symbolData&); //handle account updates from orders submitted by the bot
+void cleanQuoteDeque(auto&, const auto&, const auto&); //remove all but one quote update that occured before the most recent trade update
 
 void updateDailyBar(bar&, const std::string&, const std::string&); //get the daily volume and closing price from a parsed json object
 void updateDailyData(const bar&, dailyBarContainer&); //append the daily bar to a container
@@ -78,7 +87,7 @@ struct symbol
 	bool shortable = false; //true if the stock can be shorted
 	bool can_borrow = false; //true if the stock can be easily borrowed
 
-	bool is_an_outlier = false; //true if any of the features calculated with daily data is an outlier
+	bool is_an_outlier = true; //true if any of the features calculated with daily data is an outlier
 	bool trading_permitted = false; //true if we can trade this stock
 
 	double previous_days_close = 0.0;
@@ -95,7 +104,7 @@ struct symbol
 
 	//int rolling_csum; //number of filtered trades that occured within the last rolling time period
 	int rolling_vsum = 0; //total shares traded of all the filtered trades that occured within the last rolling time period
-	int vsum = 0; //volume sum over the current day - updated every minute
+	long long vsum = 0; //volume sum over the current day - updated every minute
 
 	int new_n = 0; //n of the current quantum price level
 	int n = 0; //n of the most recently hit quantum price level
@@ -103,10 +112,18 @@ struct symbol
 	long long t = 0; //nanoseconds since midnight
 
 	bool found_first_n = false; //true if this symbol already has a reference n - this prevents the bot from taking trades before n is initialized
+	bool has_past_quote = false; //true if this symbol has a quote update that occured (on the current trading day) before the most recent trade
 
 	std::deque<long long> time_stamps; //timestamp in nanoseconds since midnight of each filtered trade for this stock traded in the past 2 seconds
-	std::deque<double> prices; //prices of each filtered trade for this stock traded in the past 2 seconds
+	std::deque<double> prices; //price of each filtered trade for this stock traded in the past 2 seconds
 	std::deque<int> sizes; //number of shares traded for each filtered trade in the past 2 seconds
+
+	std::deque<long long> quote_times; //timestamp in nanoseconds since midnight of each quote update for this stock received since the last trade update
+	std::deque<double> bid_prices; //bid price of each quote update for this stock received since the last trade update
+	std::deque<double> ask_prices; //ask price of each quote update for this stock received since the last trade update
+
+	double last_bid = 0.0; //last updated bid price before the most recent trade
+	double last_ask = 0.0; //last updated ask price before the most recent trade
 
 	//variables below are for quantum price level calculations
 
@@ -130,6 +147,7 @@ struct symbol
 
 	std::string order_id; //the id of the last order created or modified by the bot for a particular stock
 	std::string replacement_order_id; //the id of the order that will replace the order with id order_id
+	std::string last_update_status; //the event type of the last account / order update for this symbol
 
 	int order_quantity = 0; //number of shares placed in the last order created or modified by the bot for a particular stock
 	int order_quantity_filled = 0; //number of shares filled in the last order created or modified by the bot for a particular stock
@@ -139,6 +157,8 @@ struct symbol
 	double limit_price = 0.0; //price of the last or current limit order
 
 	void updatePosition(symbolData&); //manage this stock's position size - call every trade AND account update
+
+	long long old_t = 0;
 };
 
 //contains information about a trade or minute bar update
@@ -149,7 +169,7 @@ struct tradeOrBarUpdate //trade, bar, or quote update
 	std::string msg; //error message
 
 	int code = 0; //in case of an error
-	int v = 0; //bar update - number of shares traded over the last bar period
+	long long v = 0; //bar update - number of shares traded over the last bar period
 	int s = 0; //trade update - number of shares traded
 
 	double p = 0.0; //trade update - price that the trade occured at
@@ -157,6 +177,9 @@ struct tradeOrBarUpdate //trade, bar, or quote update
 
 	double bp = 0.0; //quote update - price of the current best bid
 	char bx = '\0'; //quote update - exchange of the current best bid
+
+	double ap = 0.0; //quote update - price of the current best ask
+	char ax = '\0'; //quote update - exchange of the current best ask
 
 	std::string t; //trade update - time that the trade occured at in number of nanoseconds since epoch -- long long
 	std::string c; //trade update - trade conditions
@@ -167,7 +190,7 @@ struct tradeOrBarUpdate //trade, bar, or quote update
 //does not contain all available information, just the information this bot needs
 struct bar
 {
-	int v = 0; //number of shares traded over the last bar period
+	long long v = 0; //number of shares traded over the last bar period
 
 	double c = 0.0; //closing price of the last bar
 
@@ -178,7 +201,6 @@ class symbolData : public symbolContainer
 {
 public:
 	symbolData(const SSLContextWrapper&, const MLModel&);
-	symbolData(const SSLContextWrapper&, const MLModel&, size_t);
 
 	~symbolData();
 
@@ -200,13 +222,19 @@ public:
 	dictionary base_headers;
 	dictionary order_data; //parsed data from the last handled order
 
+	JSONParser json_parser;
+
 	SSLContextWrapper& ssl_context_wrapper;
 	MLModel& model;
 
-	void submitOrder(const std::string&, const int&, const std::string&, const double&);
+	void submitOrder(const std::string&, const int&, const std::string&, const double&); //limit order
+	void submitOrder(const std::string&, const int&, const std::string&); //market order
+
 	void replaceOrder(const std::string&, const int&, const double&);
 	void cancelOrder(const std::string&);
+
 	void cancelAllOrders();
+	void closeAllPositions(); //with market orders
 };
 
 class tradingBot
