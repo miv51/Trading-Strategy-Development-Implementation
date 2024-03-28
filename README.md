@@ -74,7 +74,7 @@ From our EDA, we obtained a deep learning model that predicts upward (+1) transi
 
 I enter a position with the intention of selling for a gain or continue holding at the next highest price level, and selling for a loss at the next lowest price level. I use the following inequality to determine which trades I take - where $P$, $G$, and $R$ is the predicted probability of a +1 transition from the model, potential gain, and potential loss for each trade respectively. <br>
 
-$$\huge P(G + R) > R$$
+$$\huge P(G + R) > R + \delta$$
 
 I size my positions in such a way where each potential trade risks losing the same amount of capital. So in the equation above, $R$ is the same for all potential trades. <br>
 
