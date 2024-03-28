@@ -72,7 +72,7 @@ Prediction value | Meaning
 ## Part 5 : Develop an Automated Trading Strategy
 From our EDA, we obtained a deep learning model that predicts upward (+1) transitions with ~50% accuracy during periods of liquidity, where at least 5 trades have occured in the last 2 seconds. 50% accuracy with a roughly 1 to 1 profit to loss ratio will not produce any profits, but as shown in <code/> transition_data_EDA_and_strategy_dev.ipynb </code>, the predicted probabilities of the final model are highly correlated with the model's accuracy. This allows us to be more selective about which trades we take. <br>
 
-I enter a position with the intention of selling for a gain or continue holding at the next highest price level, and selling for a loss at the next lowest price level. I use the following inequality to determine which trades I take - where $P$, $G$, $R$, and $\delta$ is the predicted probability of a +1 transition from the model, potential gain, potential loss, and the spread (difference between the best bid and ask) of the most recent quote update for each trade respectively. <br>
+I enter a position with the intention of selling for a gain or continue holding at the next highest price level, and selling for a loss at the next lowest price level. I use the following inequality to determine which trades I take - where $P$, $G$, $R$, and $\delta$ is the predicted probability of a +1 transition from the model, potential gain, potential loss, and the spread (difference between the best bid and ask) of the most recent quote update for each trade respectively. If the best ask price is less than the best bid price then $\delta$ is set to zero. <br>
 
 $$\huge P(G + R) > R + \delta$$
 
