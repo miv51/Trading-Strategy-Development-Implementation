@@ -58,8 +58,7 @@ int main()
     JSONArrayParser<container, updateObject, containerUpdateFunction, objectUpdateFunction> array_parser;
 
     updateObject candle_stick_array;
-
-    preProcessJSONArray(json_array);
+    
     array_parser.parseJSONArray(json_array, candle_stick_array);
 
     //print the candle sticks
