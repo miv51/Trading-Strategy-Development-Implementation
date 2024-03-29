@@ -33,7 +33,7 @@ namespace http
 		RECEIVE_HEADER,       //ready to receive the header
 		RECEIVING_HEADER,     //in the process of receiving the header
 		RECEIVE_BODY,         //ready to receive the body
-		RECEIVING_BODY,		  //in the process of receiving the body
+		RECEIVING_BODY,	      //in the process of receiving the body
 		RECEIVE_CHUNKED_BODY, //ready to receive a chunked body
 		RECEIVING_CHUNK_SIZE, //in the process of receiving the size of a chunk
 		RECEIVING_CHUNK,      //in the process of receiving a chunk of a body
