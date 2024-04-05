@@ -103,6 +103,6 @@ Although the trading strategy itself doesn't seem to be effective, the model use
 
 ## Part 8 : Known Issues
 * Can receive an unexpected 301 error when canceling and replacing orders (extremely rare occurrence) that will cause the bot to shut down (gracefully). This issue occurs because the bot does not handle rejected orders as intended.
-* Can receive a 407 slow client error because of the large amount of incoming quote updates. When this occurs, it usually occurs around 9:30am EST or during 3:50pm - 4:00pm EST.
+* Can receive a 407 slow client error because of the large amount of incoming quote updates. When this occurs, it usually occurs around 9:30am EST or during 3:50pm - 4:00pm EST. This doesn't occur (at least not yet) when I don't clean the quote deques.
 * The bot does not send orders to close all positions as expected when it uses limit orders.
 
