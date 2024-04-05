@@ -39,9 +39,9 @@ end_date = end.strftime('%Y-%m-%d')
 
 out_file = 'transitions.csv'
 
-columns = ['vsum', 'rolling_vsum', 'rolling_csum', 'dp', 'dt', 'n_time', 'price', 'size', 'last_bid', 'last_ask', 'n',
-           'transition', 't_time', 'throughtput', 'previous_days_close', 'average_volume', 'symbol', 'mean', 'std',
-           'p(-dx)', 'p(+dx)', 'E0', 'lambda']
+columns = ['vsum', 'rolling_vsum', 'rolling_csum', 'dp', 'dt', 'n_time', 'price', 'size', 'n', 'transition', 't_time',
+           'last_ask', 'last_bid', 'q_time', 'throughtput', 'previous_days_close', 'average_volume', 'symbol', 'mean',
+           'std', 'p(-dx)', 'p(+dx)', 'E0', 'lambda']
 
 class RetryException(Exception): pass # raise when we want to retry a request
 class RequestException(Exception): pass # raise when we get a status code we didn't expect or account for
@@ -288,33 +288,16 @@ def get_transitions_for(symbol : str, daily_data : pandas.DataFrame, lock : mult
                 tick_data = get_trades_for(symbol, date.strftime('%Y-%m-%dT00:00:00Z'),
                                            (date + one_day).strftime('%Y-%m-%dT00:00:00Z'))
                 
-                quote_data = get_quotes_for(symbol, date.strftime('%Y-%m-%dT00:00:00Z'),
-                                           (date + one_day).strftime('%Y-%m-%dT00:00:00Z'))
-                
                 tick_data_size = tick_data.memory_usage(index=True, deep=True).sum() # data size in bytes
-                quote_data_size = quote_data.memory_usage(index=True, deep=True).sum()
                 
-                if not (len(tick_data) * len(quote_data)): break
-                
-                quote_data['bp'] *= price_ratio # adjust quote bid data for splits and dividends
-                quote_data['ap'] *= price_ratio # adjust quote ask data for splits and dividends
-                
-                del quote_data['as']
-                del quote_data['ax']
-                del quote_data['bs']
-                del quote_data['bx']
-                
-                del quote_data['c']
-                del quote_data['z']
-                
-                quote_data.sort_index(inplace=True)
+                if not len(tick_data): break
                 
                 tick_data['p'] *= price_ratio # adjust tick data for splits and dividends
                 tick_data['s'] *= volume_ratio # adjust volume for splits (should be close to 1.0 / price_ratio)
                 
                 tick_data.sort_index(inplace=True)
                 
-                tick_data['m'] = tick_data.index - one_minute
+                tick_data['m'] = tick_data.index.floor('1Min') - one_minute
                 
                 tick_data = pandas.merge_asof(tick_data, minute_data, left_on='m', right_index=True,
                                               allow_exact_matches=False, direction='backward')
@@ -343,9 +326,6 @@ def get_transitions_for(symbol : str, daily_data : pandas.DataFrame, lock : mult
                 # for time periods in rolling windows, rolling period is less than (not less than or equal to) specified period (2S in this case)
                 window = tick_data.rolling('2S', min_periods=1)
                 
-                quote_data['ns_q'] = quote_data.index
-                quote_data['ns_q'] = quote_data['ns_q'].astype(numpy.uint64)
-                
                 tick_data['ns'] = tick_data.index
                 tick_data['ns'] = tick_data['ns'].astype(numpy.uint64)
                 
@@ -354,11 +334,6 @@ def get_transitions_for(symbol : str, daily_data : pandas.DataFrame, lock : mult
                 
                 tick_data['dp'] = window['p'].apply(window_diff, raw=True)
                 tick_data['dt'] = 1e-9 * window['ns'].apply(window_diff, raw=True)
-                
-                tick_data = pandas.merge_asof(tick_data, quote_data, left_on='ns', right_on='ns_q',
-                                              allow_exact_matches=False, direction='backward')
-                del quote_data
-                del tick_data['ns_q']
                 
                 tick_data.set_index('ns', inplace=True)
                 
@@ -381,15 +356,11 @@ def get_transitions_for(symbol : str, daily_data : pandas.DataFrame, lock : mult
                 n_tick['n_time'] = tick_data.index[0]
                 n_tick['price'] = n_tick['p']
                 n_tick['size'] = n_tick['s']
-                n_tick['last_bid'] = n_tick['bp']
-                n_tick['last_ask'] = n_tick['ap']
                 
                 del n_tick['p']
                 del n_tick['s']
-                del n_tick['bp']
-                del n_tick['ap']
                 
-                for tick_time, price, size, vsum, rolling_vsum, rolling_csum, dp, dt, ap, bp in tick_data.itertuples():
+                for tick_time, price, size, vsum, rolling_vsum, rolling_csum, dp, dt in tick_data.itertuples():
                     new_n = n
                     
                     while price <= get_price_level(new_n-1): new_n -= 1
@@ -402,14 +373,46 @@ def get_transitions_for(symbol : str, daily_data : pandas.DataFrame, lock : mult
                         
                         n = new_n
                         n_tick = {'vsum':vsum, 'rolling_vsum':rolling_vsum, 'rolling_csum':rolling_csum,
-                                  'dp':dp, 'dt':dt, 'price':price, 'size':size, 'n_time':tick_time, 'last_ask':ap,
-                                  'last_bid':bp}
+                                  'dp':dp, 'dt':dt, 'price':price, 'size':size, 'n_time':tick_time}
                         
                 n_tick.update({'n':n, 'transition':new_n-n, 't_time':tick_time})
                 
                 transitions.append(n_tick)
                 
                 transitions = pandas.DataFrame(data=transitions)
+                
+                transitions['n_time'] = transitions['n_time'].astype(numpy.uint64)
+                
+                last_transition_time = pandas.Timestamp(transitions['n_time'].iloc[-1])
+                
+                quote_data = get_quotes_for(symbol, date.strftime('%Y-%m-%dT00:00:00Z'),
+                                            last_transition_time.strftime('%Y-%m-%dT%H:%M:%S.%fZ'))
+                
+                if not len(quote_data): break
+                
+                quote_data_size = quote_data.memory_usage(index=True, deep=True).sum()
+                
+                quote_data['bp'] *= price_ratio # adjust quote bid data for splits and dividends
+                quote_data['ap'] *= price_ratio # adjust quote ask data for splits and dividends
+                
+                del quote_data['as']
+                del quote_data['ax']
+                del quote_data['bs']
+                del quote_data['bx']
+                
+                del quote_data['c']
+                del quote_data['z']
+                
+                quote_data.sort_index(inplace=True)
+                
+                quote_data['ns_q'] = quote_data.index
+                quote_data['ns_q'] = quote_data['ns_q'].astype(numpy.uint64)
+                
+                transitions = pandas.merge_asof(transitions, quote_data, left_on='n_time', right_on='ns_q',
+                                                allow_exact_matches=False, direction='backward')
+                del quote_data
+                
+                transitions.rename(columns={'bp':'last_bid', 'ap':'last_ask', 'ns_q':'q_time'}, inplace=True)
                 
                 transitions['throughtput'] = (tick_data_size + quote_data_size) / len(transitions)
                 transitions['previous_days_close'] = previous_days_close
