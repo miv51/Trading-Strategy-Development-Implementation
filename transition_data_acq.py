@@ -314,11 +314,10 @@ def get_transitions_for(symbol : str, daily_data : pandas.DataFrame, lock : mult
                 
                 tick_data.sort_index(inplace=True)
                 
-                tick_data['m'] = tick_data.index.floor('1Min') - one_minute
+                tick_data['m'] = tick_data.index - one_minute
                 
-                tick_data = tick_data.merge(minute_data, how='outer', left_on='m', right_index=True)
-                
-                tick_data['vsum'].ffill(inplace=True)
+                tick_data = pandas.merge_asof(tick_data, minute_data, left_on='m', right_index=True,
+                                              allow_exact_matches=False, direction='backward')
                 
                 tick_data = tick_data[tick_data['s'] >= 100]
                 tick_data = tick_data[tick_data['x'] != 'D'] # FINRA
