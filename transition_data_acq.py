@@ -282,7 +282,10 @@ def get_transitions_for(symbol : str, daily_data : pandas.DataFrame, lock : mult
                 minute_data = get_bars_for(symbol, '1Min', date.strftime('%Y-%m-%dT00:00:00Z'),
                                            (date + one_day).strftime('%Y-%m-%dT00:00:00Z'), 'all')
                 
+                minute_data['cash'] = minute_data['vw'] * minute_data['v']
                 minute_data['vsum'] = minute_data['v'].cumsum()
+                minute_data['csum'] = minute_data['n'].cumsum()
+                minute_data['cash_sum'] = minute_data['cash'].cumsum()
                 
                 del minute_data['o'] # faster than minute_data.drop
                 del minute_data['h']
