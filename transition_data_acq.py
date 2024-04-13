@@ -274,8 +274,8 @@ def get_transitions_for(symbol : str, daily_data : pandas.DataFrame, lock : mult
     
     encoded_symbol = encode_symbol(symbol)
     
-    for (date, average_volume, price_ratio, volume_ratio, previous_days_close, mean, std,
-         pm, pp, E0, l) in daily_data.itertuples():
+    for (date, average_volume, average_trade_count, average_cash_traded, price_ratio, volume_ratio,
+         previous_days_close, mean, std, pm, pp, E0, l) in daily_data.itertuples():
         
         while True:
             try:
@@ -370,7 +370,8 @@ def get_transitions_for(symbol : str, daily_data : pandas.DataFrame, lock : mult
                 del n_tick['p']
                 del n_tick['s']
                 
-                for tick_time, price, size, vsum, rolling_vsum, rolling_csum, dp, dt in tick_data.itertuples():
+                for (tick_time, price, size, vsum, csum, cash_sum, rolling_vsum,
+                     rolling_csum, dp, dt) in tick_data.itertuples():
                     new_n = n
                     
                     while price <= get_price_level(new_n-1): new_n -= 1
@@ -427,6 +428,8 @@ def get_transitions_for(symbol : str, daily_data : pandas.DataFrame, lock : mult
                 transitions['throughtput'] = (tick_data_size + quote_data_size) / len(transitions)
                 transitions['previous_days_close'] = previous_days_close
                 transitions['average_volume'] = average_volume
+                transitions['average_trade_count'] = average_trade_count
+                transitions['average_cash_traded'] = average_cash_traded
                 transitions['symbol'] = encoded_symbol
                 transitions['mean'] = mean
                 transitions['std'] = std
