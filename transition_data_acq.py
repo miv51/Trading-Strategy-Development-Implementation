@@ -39,9 +39,17 @@ end_date = end.strftime('%Y-%m-%d')
 
 out_file = 'transitions.csv'
 
-columns = ['vsum', 'rolling_vsum', 'rolling_csum', 'dp', 'dt', 'n_time', 'price', 'size', 'n', 'transition', 't_time',
-           'last_ask', 'last_bid', 'q_time', 'throughtput', 'previous_days_close', 'average_volume', 'symbol', 'mean',
-           'std', 'p(-dx)', 'p(+dx)', 'E0', 'lambda']
+window_sizes = ['0.5', '2', '10'] # window sizes in seconds for calculating various features
+window_features = ['rolling_vsum', 'rolling_csum', 'dp', 'dt'] # features that will be calculated with different window sizes
+window_feature_names = []
+
+for window_size in window_sizes:
+    for window_feature in window_features: window_feature_names.append(window_feature + '_' + window_size + 'S')
+    
+columns = ['vsum', 'csum', 'cash_sum', 'high_of_day', 'low_of_day'] + window_feature_names + ['n_time', 'price', 'size', 'n',
+        'transition', 't_time', 'last_ask_price', 'last_ask_size', 'last_bid_price', 'last_bid_size', 'q_time', 'throughtput',
+        'previous_days_close', 'average_volume', 'average_trade_count', 'average_cash_traded', 'symbol', 'mean', 'std',
+        'p(-dx)', 'p(+dx)', 'E0', 'lambda']
 
 class RetryException(Exception): pass # raise when we want to retry a request
 class RequestException(Exception): pass # raise when we get a status code we didn't expect or account for
@@ -287,6 +295,10 @@ def get_transitions_for(symbol : str, daily_data : pandas.DataFrame, lock : mult
                 minute_data['csum'] = minute_data['n'].cumsum()
                 minute_data['cash_sum'] = minute_data['cash'].cumsum()
                 
+                minute_data['high_of_day'] = minute_data['h'].cummax()
+                minute_data['low_of_day'] = minute_data['l'].cummin()
+                
+                del minute_data['cash']
                 del minute_data['o'] # faster than minute_data.drop
                 del minute_data['h']
                 del minute_data['l']
@@ -333,18 +345,21 @@ def get_transitions_for(symbol : str, daily_data : pandas.DataFrame, lock : mult
                 del tick_data['m']
                 del minute_data
                 
-                # for time periods in rolling windows, rolling period is less than (not less than or equal to) specified period (2S in this case)
-                window = tick_data.rolling('2S', min_periods=1)
+                # for time periods in rolling windows, rolling period is less than (not less than or equal to) ...
+                # ... specified periods (0.5, 2, and 10 seconds in this case)
                 
                 tick_data['ns'] = tick_data.index
                 tick_data['ns'] = tick_data['ns'].astype(numpy.uint64)
                 
-                tick_data['rolling_vsum'] = window['s'].sum()
-                tick_data['rolling_csum'] = window['s'].count()
-                
-                tick_data['dp'] = window['p'].apply(window_diff, raw=True)
-                tick_data['dt'] = 1e-9 * window['ns'].apply(window_diff, raw=True)
-                
+                for window_size in window_sizes:
+                    window = tick_data.rolling(window_size + 'S', min_periods=1)
+                    
+                    tick_data['rolling_vsum_' + window_size + 'S'] = window['s'].sum()
+                    tick_data['rolling_csum_' + window_size + 'S'] = window['s'].count()
+                    
+                    tick_data['dp_' + window_size + 'S'] = window['p'].apply(window_diff, raw=True)
+                    tick_data['dt_' + window_size + 'S'] = 1e-9 * window['ns'].apply(window_diff, raw=True)
+                    
                 tick_data.set_index('ns', inplace=True)
                 
                 # gather transitions
@@ -370,8 +385,9 @@ def get_transitions_for(symbol : str, daily_data : pandas.DataFrame, lock : mult
                 del n_tick['p']
                 del n_tick['s']
                 
-                for (tick_time, price, size, vsum, csum, cash_sum, rolling_vsum,
-                     rolling_csum, dp, dt) in tick_data.itertuples():
+                for (tick_time, price, size, vsum, csum, cash_sum, high_of_day, low_of_day,
+                     *window_feature_values) in tick_data.itertuples():
+                    
                     new_n = n
                     
                     while price <= get_price_level(new_n-1): new_n -= 1
@@ -383,8 +399,10 @@ def get_transitions_for(symbol : str, daily_data : pandas.DataFrame, lock : mult
                         transitions.append(n_tick)
                         
                         n = new_n
-                        n_tick = {'vsum':vsum, 'rolling_vsum':rolling_vsum, 'rolling_csum':rolling_csum,
-                                  'dp':dp, 'dt':dt, 'price':price, 'size':size, 'n_time':tick_time}
+                        n_tick = {'vsum':vsum, 'csum':csum, 'cash_sum':cash_sum, 'high_of_day':high_of_day,
+                                  'low_of_day':low_of_day, 'price':price, 'size':size, 'n_time':tick_time}
+                        
+                        n_tick.update(zip(window_feature_names, window_feature_values))
                         
                 n_tick.update({'n':n, 'transition':new_n-n, 't_time':tick_time})
                 
@@ -406,9 +424,7 @@ def get_transitions_for(symbol : str, daily_data : pandas.DataFrame, lock : mult
                 quote_data['bp'] *= price_ratio # adjust quote bid data for splits and dividends
                 quote_data['ap'] *= price_ratio # adjust quote ask data for splits and dividends
                 
-                del quote_data['as']
                 del quote_data['ax']
-                del quote_data['bs']
                 del quote_data['bx']
                 
                 del quote_data['c']
@@ -423,7 +439,8 @@ def get_transitions_for(symbol : str, daily_data : pandas.DataFrame, lock : mult
                                                 allow_exact_matches=False, direction='backward')
                 del quote_data
                 
-                transitions.rename(columns={'bp':'last_bid', 'ap':'last_ask', 'ns_q':'q_time'}, inplace=True)
+                transitions.rename(columns={'bp':'last_bid_price', 'ap':'last_ask_price',
+                                            'bs':'last_bid_size', 'as':'last_ask_size', 'ns_q':'q_time'}, inplace=True)
                 
                 transitions['throughtput'] = (tick_data_size + quote_data_size) / len(transitions)
                 transitions['previous_days_close'] = previous_days_close
