@@ -162,11 +162,12 @@ def get_daily_features(symbol : str) -> pandas.DataFrame or None:
     daily_data = get_bars_for(symbol, '1Day', start_date, end_date, 'all')
     raw_daily_data = get_bars_for(symbol, '1Day', start_date, end_date, 'raw')
     
+    daily_data['cash_traded'] = daily_data['vw'] * daily_data['v']
+    
     del daily_data['o'] # faster than daily_data.drop
     del daily_data['h']
     del daily_data['l']
     del daily_data['vw']
-    del daily_data['n']
     
     del raw_daily_data['o']
     del raw_daily_data['h']
@@ -175,8 +176,14 @@ def get_daily_features(symbol : str) -> pandas.DataFrame or None:
     del raw_daily_data['n']
     
     daily_data['average_volume'] = daily_data['v'].shift(1).rolling(70, min_periods=1).mean()
+    daily_data['average_trade_count'] = daily_data['n'].shift(1).rolling(70, min_periods=1).mean()
+    daily_data['average_cash_traded'] = daily_data['cash_traded'].shift(1).rolling(70, min_periods=1).mean()
+    
     daily_data['price_ratio'] = daily_data['c'] / raw_daily_data['c']
     daily_data['volume_ratio'] = daily_data['v'] / raw_daily_data['v']
+    
+    del daily_data['cash_traded']
+    del daily_data['n']
     
     del raw_daily_data
     
