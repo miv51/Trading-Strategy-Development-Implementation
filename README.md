@@ -56,7 +56,7 @@ throughtput | the number of bytes of data analysed to find the current transitio
 symbol | integer-encoded ticker (see <code/> transition_data_acq.py </code>)
 
 ## Part 3 : Analyzing Data
-Exploratory Data Analysis (EDA) and Data Wrangling was performed on the data and the results are presented in <code/> transition_data_EDA_and_strategy_dev.ipynb </code>.
+Exploratory Data Analysis (EDA) and Data Wrangling was initially performed on the data and the results are presented in <code/> transition_data_EDA_and_strategy_dev.ipynb </code>. More features were gathered that were mostly related to the most important features which were time_of_day, n, relative_volume, and dp. The table below shows what additional features were gathered. EDA was then performed on the updated data and those results are presented in <code/> transition_data_EDA_and_strategy_dev_part_2.ipynb </code>.
 
 ## Part 4 : Develop a Machine Learning Model
 A predictive model - that predicts what price level that the price will reach next - was developed and the results are also presented in <code/> transition_data_EDA_and_strategy_dev.ipynb </code>. The table below shows the possible predictions.
