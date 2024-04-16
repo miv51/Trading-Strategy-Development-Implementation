@@ -7,6 +7,7 @@ import numpy
 import json
 import time
 import math
+import os
 
 import warnings
 
@@ -40,16 +41,6 @@ end_date = end.strftime('%Y-%m-%d')
 out_file = 'transitions.csv'
 
 window_sizes = ['0.5', '2', '10'] # window sizes in seconds for calculating various features
-window_features = ['rolling_vsum', 'rolling_csum', 'dp', 'dt'] # features that will be calculated with different window sizes
-window_feature_names = []
-
-for window_size in window_sizes:
-    for window_feature in window_features: window_feature_names.append(window_feature + '_' + window_size + 'S')
-    
-columns = ['vsum', 'csum', 'cash_sum', 'high_of_day', 'low_of_day'] + window_feature_names + ['n_time', 'price', 'size', 'n',
-        'transition', 't_time', 'last_ask_price', 'last_ask_size', 'last_bid_price', 'last_bid_size', 'q_time', 'throughtput',
-        'previous_days_close', 'average_volume', 'average_trade_count', 'average_cash_traded', 'symbol', 'mean', 'std',
-        'p(-dx)', 'p(+dx)', 'E0', 'lambda']
 
 class RetryException(Exception): pass # raise when we want to retry a request
 class RequestException(Exception): pass # raise when we get a status code we didn't expect or account for
@@ -296,8 +287,30 @@ def get_transitions_for(symbol : str, daily_data : pandas.DataFrame, lock : mult
                 minute_data['cash_sum'] = minute_data['cash'].cumsum()
                 
                 minute_data['high_of_day'] = minute_data['h'].cummax()
-                minute_data['low_of_day'] = minute_data['l'].cummin()
+                minute_data['low_of_day'] = -minute_data['l'].cummin() # needs to be negitive to record low_of_day_time
                 
+                minute_data['time'] = minute_data.index
+                minute_data['time'] = minute_data['time'].astype(numpy.uint64)
+                
+                # record the time - to the nearest minute - that the high of day occured
+                high_of_day_time = minute_data.groupby('high_of_day', as_index=False)[['high_of_day','time']].first()
+                high_of_day_time.rename(columns={'time':'high_of_day_time'}, inplace=True)
+                
+                # record the time - to the nearest minute - that the low of day occured
+                low_of_day_time = minute_data.groupby('low_of_day', as_index=False)[['low_of_day','time']].first()
+                low_of_day_time.rename(columns={'time':'low_of_day_time'}, inplace=True)
+                
+                high_of_day_time = pandas.merge_asof(minute_data, high_of_day_time, on='high_of_day',
+                                                     allow_exact_matches=True, direction='backward')['high_of_day_time']
+                
+                low_of_day_time = pandas.merge_asof(minute_data, low_of_day_time, on='low_of_day',
+                                                    allow_exact_matches=True, direction='backward')['low_of_day_time']
+                
+                minute_data['low_of_day'] = -minute_data['low_of_day'] # changing low_of_day price back to positive
+                minute_data['high_of_day_time'] = numpy.uint64(high_of_day_time)
+                minute_data['low_of_day_time'] = numpy.uint64(low_of_day_time)
+                
+                del minute_data['time']
                 del minute_data['cash']
                 del minute_data['o'] # faster than minute_data.drop
                 del minute_data['h']
@@ -370,23 +383,20 @@ def get_transitions_for(symbol : str, daily_data : pandas.DataFrame, lock : mult
                 
                 if get_price_level is None: break
                 
-                price = tick_data['p'].iloc[0]
+                tick_data.rename(columns={'p':'price', 's':'size'}, inplace=True)
+                
+                price = tick_data['price'].iloc[0]
                 n = 0
                 
                 while price <= get_price_level(n-1): n -= 1
                 while price >= get_price_level(n+1): n += 1
                 
                 n_tick = dict(tick_data.iloc[0])
-                
                 n_tick['n_time'] = tick_data.index[0]
-                n_tick['price'] = n_tick['p']
-                n_tick['size'] = n_tick['s']
                 
-                del n_tick['p']
-                del n_tick['s']
+                other_feature_names = list(tick_data.columns)[1:] # the first one is price
                 
-                for (tick_time, price, size, vsum, csum, cash_sum, high_of_day, low_of_day,
-                     *window_feature_values) in tick_data.itertuples():
+                for tick_time, price, *other_features in tick_data.itertuples():
                     
                     new_n = n
                     
@@ -399,10 +409,9 @@ def get_transitions_for(symbol : str, daily_data : pandas.DataFrame, lock : mult
                         transitions.append(n_tick)
                         
                         n = new_n
-                        n_tick = {'vsum':vsum, 'csum':csum, 'cash_sum':cash_sum, 'high_of_day':high_of_day,
-                                  'low_of_day':low_of_day, 'price':price, 'size':size, 'n_time':tick_time}
+                        n_tick = {'n_time':tick_time, 'price':price}
                         
-                        n_tick.update(zip(window_feature_names, window_feature_values))
+                        n_tick.update(zip(other_feature_names, other_features))
                         
                 n_tick.update({'n':n, 'transition':new_n-n, 't_time':tick_time})
                 
@@ -424,6 +433,9 @@ def get_transitions_for(symbol : str, daily_data : pandas.DataFrame, lock : mult
                 quote_data['bp'] *= price_ratio # adjust quote bid data for splits and dividends
                 quote_data['ap'] *= price_ratio # adjust quote ask data for splits and dividends
                 
+                quote_data['bs'] *= volume_ratio # adjust bid size for splits (should be close to 1.0 / price_ratio)
+                quote_data['as'] *= volume_ratio # adjust ask size for splits (should be close to 1.0 / price_ratio)
+                
                 del quote_data['ax']
                 del quote_data['bx']
                 
@@ -444,21 +456,24 @@ def get_transitions_for(symbol : str, daily_data : pandas.DataFrame, lock : mult
                 
                 transitions['throughtput'] = (tick_data_size + quote_data_size) / len(transitions)
                 transitions['previous_days_close'] = previous_days_close
-                transitions['average_volume'] = average_volume
                 transitions['average_trade_count'] = average_trade_count
                 transitions['average_cash_traded'] = average_cash_traded
+                transitions['average_volume'] = average_volume
                 transitions['symbol'] = encoded_symbol
                 transitions['mean'] = mean
                 transitions['std'] = std
                 transitions['p(-dx)'] = pm
                 transitions['p(+dx)'] = pp
-                transitions['E0'] = E0
                 transitions['lambda'] = l
+                transitions['E0'] = E0
                 
                 lock.acquire()
                 
                 while True:
-                    try: transitions.to_csv(out_file, mode='a', index=False, header=False)
+                    try:
+                        if os.path.exists(out_file): transitions.to_csv(out_file, mode='a', index=False, header=False)
+                        else: transitions.to_csv(out_file, mode='w', index=False, header=True)
+                        
                     except PermissionError:
                         time.sleep(5.0)
                         
@@ -514,8 +529,7 @@ if __name__ == '__main__':
     symbol_queue = multiprocessing.Queue()
     lock = multiprocessing.Lock()
     
-    pandas.DataFrame(data=[], columns=columns).to_csv(out_file, mode='w', index=False, header=True)
-    
+    if os.path.exists(out_file): os.remove(out_file)
     for symbol in get_all_symbols(exchanges): symbol_queue.put(symbol)
     
     execute_process_pool(n_processes, execute_thread_pool, n_threads, transitions_process, symbol_queue, lock)
