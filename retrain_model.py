@@ -22,6 +22,9 @@ potential_loss = 1000.0 # risk 1000 dollars per trade - this can be any positive
 features = ['time_of_day', 'relative_volume', 'n', 'mean', 'dp', 'std', 'dt', 'vsum', 'average_volume',
             'previous_days_close', 'rolling_csum', 'rolling_vsum', 'p(-dx)', 'size', 'p(+dx)', 'lambda']
 
+log_features = ['vsum', 'rolling_vsum', 'rolling_csum', 'dt', 'dp', 'price', 'size', 'previous_days_close',
+                'average_volume', 'mean', 'std', 'p(-dx)', 'p(+dx)', 'lambda', 'relative_volume']
+
 num_features = len(features)
 
 total_segments = 10 # total number of segments to perform walk-foward analysis on
@@ -34,11 +37,7 @@ initial_capitals = numpy.array([5e+5, 1e+6, 5e+6, 1e+7, 5e+7, 1e+8, 5e+8, 1e+9])
 
 def transform(data, scaler, fit=False):
     
-    for feature in ['vsum', 'rolling_vsum', 'rolling_csum', 'dt', 'dp', 'price', 'size', 'previous_days_close',
-                    'average_volume', 'mean', 'std', 'p(-dx)', 'p(+dx)', 'lambda', 'relative_volume']:
-        
-        data[feature] = numpy.log(1e-9 + data[feature])
-        
+    for feature in log_features: data[feature] = numpy.log(1e-9 + data[feature])
     if fit: data[features] = scaler.fit_transform(data[features])
     else:
         re_features = scaler.feature_names_in_
@@ -50,11 +49,8 @@ def inverse_transform(data, scaler):
     
     data[re_features] = scaler.inverse_transform(data[re_features])
     
-    for feature in ['vsum', 'rolling_vsum', 'rolling_csum', 'dt', 'dp', 'price', 'size', 'previous_days_close',
-                    'average_volume', 'mean', 'std', 'p(-dx)', 'p(+dx)', 'lambda', 'relative_volume']:
-        
-        data[feature] = numpy.exp(data[feature]) - 1e-9
-        
+    for feature in log_features: data[feature] = numpy.exp(data[feature]) - 1e-9
+    
 def remove_outliers(transformed_and_scaled_data):
     
     exclude = (transformed_and_scaled_data[features]**2 > 9).any(axis=1)
@@ -134,8 +130,9 @@ def calc_risk_and_reward(data):
     data['lower_transition_price'] = quantum_price_levels(data, -1)
     data['upper_transition_price'] = quantum_price_levels(data, 1)
     data['current_price'] = numpy.maximum(quantum_price_levels(data, 0), data['price'])
-
-    data['slippage'] = numpy.abs(data['last_ask'] - data['last_bid']) # estimate slippage using the spread of the most recent quote update
+    
+    # estimate slippage using the spread of the most recent quote update
+    data['slippage'] = numpy.abs(data['last_ask'] - data['last_bid'])
     data['risk_per_share'] = data['current_price'] - data['lower_transition_price'] + data['slippage']
     data['reward_per_share'] = data['upper_transition_price'] - data['current_price'] - data['slippage']
     
@@ -216,8 +213,9 @@ def get_profits(events, initial_capitals):
 
 def get_net_gains(data, initial_capitals):
     
+    # I assume the total slippage is the spread at the time of purchase
     data['buy_price'] = data['current_price']
-    data['sell_price'] = quantum_price_levels(data, data['transition'].replace(0, -1, inplace=False))
+    data['sell_price'] = quantum_price_levels(data, data['transition'].replace(0, -1, inplace=False)) - data['slippage']
     
     return get_profits(get_events(data), initial_capitals)
 
@@ -268,14 +266,16 @@ def save_model_weights(model, path):
     file.close()
     
 transition_data = pandas.read_csv(trans_data_path)
-transition_data = transition_data[transition_data['n_time'] >= pandas.Timestamp('2020-01-01').value]
+transition_data.rename(columns={'last_bid_price':'last_bid', 'last_ask_price':'last_ask', 'dp_2S':'dp', 'dt_2S':'dt',
+                                'rolling_csum_2S':'rolling_csum', 'rolling_vsum_2S':'rolling_vsum'}, inplace=True)
 
-localized_time_of_day = transition_data['n_time'].astype('datetime64[ns]')
-localized_time_of_day = localized_time_of_day.dt.tz_localize('UTC').dt.tz_convert('America/New_York')
-localized_time_of_day = localized_time_of_day - localized_time_of_day.dt.floor('1D')
-localized_time_of_day = localized_time_of_day.dt.total_seconds() / 60 # in minutes
+# convert time of day from nanoseconds since epoch to minutes since midnight in EST
+transition_data['time_of_day'] = transition_data['n_time'].astype('datetime64[ns]')
+transition_data['time_of_day'] = transition_data['time_of_day'].dt.tz_localize('UTC').dt.tz_convert('America/New_York')
+transition_data['time_of_day'] = transition_data['time_of_day'] - transition_data['time_of_day'].dt.floor('1D')
+transition_data['time_of_day'] = transition_data['time_of_day'].dt.total_seconds() / 60 # in minutes
 
-transition_data = transition_data[localized_time_of_day < 955] # remove transitions that start after 3:55 pm EST
+transition_data = transition_data[transition_data['time_of_day'] < 955] # remove transitions that start after 3:55 pm EST
 
 localized_time_of_day = transition_data['t_time'].astype('datetime64[ns]')
 localized_time_of_day = localized_time_of_day.dt.tz_localize('UTC').dt.tz_convert('America/New_York')
@@ -285,10 +285,6 @@ localized_time_of_day = localized_time_of_day.dt.total_seconds() / 60 # in minut
 transition_data.loc[localized_time_of_day >= 955, target] = 0 # set all transitions that end after 3:55 pm EST to 0
 
 del localized_time_of_day
-
-transition_data['time_of_day'] = transition_data['n_time'].astype('datetime64[ns]')
-transition_data['time_of_day'] = transition_data['time_of_day'] - transition_data['time_of_day'].dt.floor('1D')
-transition_data['time_of_day'] = transition_data['time_of_day'].dt.total_seconds() / 60 # in minutes
 
 transition_data['relative_volume'] = transition_data['vsum'] / transition_data['average_volume']
 transition_data['dp'] = transition_data['price'] / (transition_data['price'] - transition_data['dp'])
