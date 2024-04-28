@@ -1,3 +1,4 @@
+
 //use multiple websockets asynchronously
 
 #include "exceptUtils.h" //needed for custom exception class
@@ -32,12 +33,15 @@ int main()
             //socket is blocking if true
             bool blocking = false;
 
+            //recv returns whatever this flag is set to when a ping frame is received
+            bool signal_on_control = false;
+
             //specify the hostname
             std::string host = "streamer.finance.yahoo.com";
 
             //create the websockets
-            websocket websocket_client1(ssl_context_wrapper, host, blocking, timeout);
-            websocket websocket_client2(ssl_context_wrapper, host, blocking, timeout);
+            websocket websocket_client1(ssl_context_wrapper, host, blocking, signal_on_control, timeout);
+            websocket websocket_client2(ssl_context_wrapper, host, blocking, signal_on_control, timeout);
 
             //initialize the websockets - connect to the host
             websocket_client1.reInit();
@@ -90,15 +94,10 @@ int main()
                 //non-blocking sockets will return if no message is pending and will not block execution
 
                 //check for a pending message from the first websocket
-                websocket_client1.recv(last_message1);
-
-                //an empty string indicates no message was pending
-                if (last_message1.size()) std::cout << "FROM WEBSOCKET 1 : " << last_message1 << "\n\n";
+                if (websocket_client1.recv(last_message1)) std::cout << "FROM WEBSOCKET 1 : " << last_message1 << "\n\n";
 
                 //check for a pending message from the second websocket
-                websocket_client2.recv(last_message2);
-
-                if (last_message2.size()) std::cout << "FROM WEBSOCKET 2 : " << last_message2 << "\n\n";
+                if (websocket_client2.recv(last_message2)) std::cout << "FROM WEBSOCKET 2 : " << last_message2 << "\n\n";
             }
         }
         catch (const exceptions::exception& exception)
@@ -126,6 +125,6 @@ int main()
     {
         std::cout << " - Base Exception caught : " << exception.what() << std::endl;
     }
-    
+
     return 0;
 }
