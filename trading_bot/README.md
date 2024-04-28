@@ -67,6 +67,15 @@ This module is used to manage SSL resources and wrap sockets and socket operatio
 #### Model Utilities
 This module contains the predictive model used to predict transition probabilities and is used to productionize trained tensorflow models. It is a raw and highly efficient (for this bot) implementation of a multilayer perceptron (MLP) and allows me to dynamically load model weights for fixed model archetectures. <br>
 
+#### Input-Output (io) Utilities
+This module is used to convert strings to their respective datatypes. The convert function replaces io functions from the standard library such as std::stod, std::stoi, and other similar functions and the convertUTC function is used to convert UTC timestamps to time-of-day in nanoseconds (not time since epoch). <br>
+
+#### Static Unordered Map (sumap) Utilities
+This module hosts an unordered map class that only uses stack memory. Since we can closely estimate the number of stocks that the bot will watch every day, we can use a container that only uses stack memory to reduce the transversal and retrieval time. Since the bot listens to trade and quote updates, the container that contains the data for individual stocks will be accessed extremely frequently. I made this container to replace the std::unordered_map for this specific purpose (I still use std::unordered_map for many other things in the bot). <br>
+
+#### Segmented Queue (sq) Utilities
+This module hosts a queue that creates, joins, and frees blocks of memory in order to expand and contract. It serves the same purpose as std::queue but can have significantly faster appending, removing, and transversal (including with iterators) times depending on the size of the memory stacks used to construct arrays. Using this structure over std::queue offers the greatest performance boost for the critical path in the bot. <br>
+
 <br>
 
 ## Part 2 : How the bot works
