@@ -9,7 +9,6 @@
 #include <iostream>
 #include <string>
 
-
 int main()
 {
     try
@@ -32,8 +31,11 @@ int main()
             //socket is blocking if true
             bool blocking = true;
 
+            //recv returns whatever this flag is set to when a ping frame is received
+            bool signal_on_control = false;
+
             //create the websocket
-            websocket websocket_client(ssl_context_wrapper, "streamer.finance.yahoo.com", blocking, timeout);
+            websocket websocket_client(ssl_context_wrapper, "streamer.finance.yahoo.com", blocking, signal_on_control, timeout);
 
             //initialize the websocket - connect to the host
             websocket_client.reInit();
@@ -74,9 +76,7 @@ int main()
             //print incoming messages from the websocket
             while (true)
             {
-                websocket_client.recv(last_message);
-
-                if (last_message.size()) std::cout << last_message << std::endl;
+                if (websocket_client.recv(last_message)) std::cout << last_message << std::endl;
             }
         }
         catch (const exceptions::exception& exception)
@@ -104,6 +104,6 @@ int main()
     {
         std::cout << " - Base Exception caught : " << exception.what() << std::endl;
     }
-    
+
     return 0;
 }
