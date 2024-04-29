@@ -40,7 +40,8 @@ end_date = end.strftime('%Y-%m-%d')
 
 out_file = 'transitions.csv'
 
-window_sizes = ['0.5', '2', '10'] # window sizes in seconds for calculating various features
+window_sizes = ['0.5', '2', '10', '60'] # window sizes in seconds for calculating various features
+lag_times = [1, 5, 20, 60] # lag times in minutes for calculating relative price changes on longer timeframes
 
 class RetryException(Exception): pass # raise when we want to retry a request
 class RequestException(Exception): pass # raise when we get a status code we didn't expect or account for
@@ -310,6 +311,11 @@ def get_transitions_for(symbol : str, daily_data : pandas.DataFrame, lock : mult
                 minute_data['high_of_day_time'] = numpy.uint64(high_of_day_time)
                 minute_data['low_of_day_time'] = numpy.uint64(low_of_day_time)
                 
+                for lag_time in lag_times:
+                    minute_data['c_'+str(lag_time)+'m'] = minute_data['c']
+                    minute_data['t_'+str(lag_time)+'m'] = minute_data.index + one_minute
+                    minute_data['t_'+str(lag_time)+'m'] = minute_data['t_'+str(lag_time)+'m'].astype(numpy.uint64)
+                    
                 del minute_data['time']
                 del minute_data['cash']
                 del minute_data['o'] # faster than minute_data.drop
@@ -332,11 +338,20 @@ def get_transitions_for(symbol : str, daily_data : pandas.DataFrame, lock : mult
                 
                 tick_data.sort_index(inplace=True)
                 
-                tick_data['m'] = tick_data.index.floor('1Min') - one_minute
+                tick_data['m'] = tick_data.index - one_minute
                 
                 tick_data = pandas.merge_asof(tick_data, minute_data, left_on='m', right_index=True,
                                               allow_exact_matches=False, direction='backward')
-                
+                for lag_time in lag_times:
+                    del tick_data['c_'+str(lag_time)+'m']
+                    del tick_data['t_'+str(lag_time)+'m']
+                    
+                    tick_data['m'] = tick_data.index - lag_time * one_minute
+                    
+                    tick_data = pandas.merge_asof(tick_data, minute_data[['c_'+str(lag_time)+'m', 't_'+str(lag_time)+'m']],
+                                                  left_on='m', right_index=True, allow_exact_matches=False,
+                                                  direction='backward')
+                    
                 tick_data = tick_data[tick_data['s'] >= 100]
                 tick_data = tick_data[tick_data['x'] != 'D'] # FINRA
                 tick_data = tick_data[~tick_data['c'].astype(str).str.contains("'Z'")] # out of seq (reg)
@@ -359,7 +374,7 @@ def get_transitions_for(symbol : str, daily_data : pandas.DataFrame, lock : mult
                 del minute_data
                 
                 # for time periods in rolling windows, rolling period is less than (not less than or equal to) ...
-                # ... specified periods (0.5, 2, and 10 seconds in this case)
+                # ... specified periods (0.5, 2, 10, and 60 seconds in this case)
                 
                 tick_data['ns'] = tick_data.index
                 tick_data['ns'] = tick_data['ns'].astype(numpy.uint64)
@@ -522,8 +537,8 @@ def get_all_symbols(exchanges : list[str]) -> list[str]:
 if __name__ == '__main__':
     t = time.time()
     
-    n_threads = 6
-    n_processes = 4
+    n_threads = 5
+    n_processes = 6
     exchanges = ['NASDAQ', 'NYSE']
     
     symbol_queue = multiprocessing.Queue()
